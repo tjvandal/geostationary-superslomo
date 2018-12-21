@@ -1,8 +1,8 @@
 import os, sys
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
-
 import numpy as np
+import xarray as xr
 import matplotlib.pyplot as plt
 
 import torch
@@ -28,57 +28,69 @@ if not os.path.exists(lowres_dir):
 
 
 dir_data = '/raid/tj/GOES16/'
-dataset = goes16.NOAAGOES(data_dir=dir_data)
+dataset = goes16.NOAAGOESC(data_dir=dir_data)
+daydata = dataset.read_day(2017, 120)
+dayblocks = dataset.blocks(daydata, width=352)
+NBlocks = len(dayblocks)
+N, H, W, C = dayblocks[0].shape
+
+# dayblocks (N, NBlocks, height, width, channels)
+# given 5 minute data, we want to fill in 2 of every 3 examples
 
 warper = FlowWarper().cuda()
 
-block_num = 75
+block_num = 11
 frame_counter= 0
+block = dayblocks[block_num].transpose('time', 'channel', 'y', 'x')
 
-for i, block in enumerate(dataset.iterate(shuffle=False)): # N,12or13,512,512,3
-    if i == 0:
-        continue
+observed_frames = np.arange(0, N, 3)
+print('observed frames', observed_frames)
 
-    print("Number of blocks", block.shape[0])
+predicted_das = []
 
-    block = torch.from_numpy(block[block_num]).cuda()
-    block = block.permute(0,3,1,2) # 12,3,512,512
+for idx, frame0 in enumerate(observed_frames):
+    frame1 = min(frame0+3, N-1)
+    print('Frame: %i to %i' % (frame0, frame1))
+    # check if there are any frames to fill
+    if frame1 < frame0 + 1:
+        break
 
-    B1 = block[:4]
-    B2 = block[3:7]
-    B3 = block[6:10]
-    B4 = block[9:]
+    I0 = torch.from_numpy(block.isel(time=[frame0,]).values).cuda()
+    I1 = torch.from_numpy(block.isel(time=[frame1,]).values).cuda()
+    IT = torch.from_numpy(block.isel(time=range(frame0+1, frame1)).values).cuda()
 
-    2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57, 2, 7
+    x = torch.cat([I0, I1], dim=1)
+    f = flow_net(x)
 
-    for B in [B1, B2, B3, B4]:
-        print('Frame: %i' % frame_counter)
-        I0 = torch.unsqueeze(B[0], 0)
-        I1 = torch.unsqueeze(B[-1], 0)
-        IT = B[1:-1]
+    f_10 = f[:,:2]
+    f_01 = f[:,2:]
 
-        x = torch.cat([I0, I1], dim=1)
-        f = flow_net(x)
+    T = IT.shape[0]
+    predicted_frames = np.ones((T, C, H, W)) * -9999.
+    for i in range(1,T+1):
+        t = 1. * i / (T+1)
+        I_t = interp_net(I0, I1, f_10, f_01, t)
+        #predicted_frames.append(I_t)
+        predicted_frames[i-1] = I_t[0].cpu().detach().numpy()
 
-        f_10 = f[:,:2]
-        f_01 = f[:,2:]
+    tfilled = block.isel(time=range(frame0+1, frame1)).time.values
+    predicted_frames = xr.DataArray(predicted_frames,
+                                    coords=[tfilled, block.channel, block.y, block.x], 
+                                    dims=['time', 'channel', 'y', 'x'])
+    predicted_das.append(predicted_frames)
 
-        T = IT.shape[0]
-        predicted_frames = []
-        for i in range(1,T+1):
-            t = 1. * i / (T+1)
-            I_t = interp_net(I0, I1, f_10, f_01, t)
-            predicted_frames.append(I_t)
-            print(str(i) + "\tI_t", I_t.shape)
+    # lets save these predictions to images
+    #sample_image_file = os.path.join(prediction_dir, '%04i.jpg')
+    #print("Saving Predictions")
+    #for jj, image in enumerate([I0] + predicted_frames):
+    #    join_images = torch.cat([I0, image], dim=3)
+    #    torchvision.utils.save_image((join_images), sample_image_file  % frame_counter,
+    #                                 normalize=True)
+    #    frame_counter += 1
 
-        # lets save these predictions to images!
-        sample_image_file = os.path.join(prediction_dir, '%04i.jpg')
-        obs_image_file = os.path.join(lowres_dir, '%04i.jpg')
-        torchvision.utils.save_image((I0), obs_image_file  % frame_counter, normalize=True)
+predictions = xr.concat(predicted_das, 'time')
+save_file = os.path.join(prediction_dir, 'block-%i.nc' % block_num)
+xr.Dataset(dict(Rad=predictions)).to_netcdf(save_file)
 
-        for jj, image in enumerate([I0] + predicted_frames):
-            join_images = torch.cat([I0, image], dim=3)
-            torchvision.utils.save_image((join_images), sample_image_file  % frame_counter,
-                                         normalize=True)
-            frame_counter += 1
+
 
