@@ -2,6 +2,7 @@ import os, sys
 import datetime
 import io
 import time
+import shutil
 
 import boto
 import xarray as xr
@@ -12,10 +13,10 @@ import scipy.misc
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-import tempfile
-
 import utils
 
+# temporary directory is used to save file from s3 and read via xarray
+TEMPORARY_DIR = './tmp'
 
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
@@ -57,7 +58,7 @@ class NOAAGOESS3(object):
                 minute = int(t[10:12])
                 second = int(t[12:15])
                 data.append(dict(channel=c, year=year, day=day, hour=hour,
-                                 minute=minute, second=second, spatial=spatial, 
+                                 minute=minute, second=second, spatial=spatial,
                                  keyname=key_nc.name))
                 #if len(data) > 100:
                 #    break
@@ -73,12 +74,13 @@ class NOAAGOESS3(object):
         return ds
 
     def read_nc_from_s3(self, keyname, normalize=True):
+        if not os.path.exists(TEMPORARY_DIR):
+            os.makedirs(TEMPORARY_DIR)
         k = boto.s3.key.Key(self.goes_bucket)
         k.key = keyname
-        tmpf = tempfile.NamedTemporaryFile()
-        content = k.get_contents_to_filename(tmpf.name)
-        ds = self._open_file(tmpf.name, normalize=normalize)
-        #tmpf.close()
+        tmpf = os.path.join(TEMPORARY_DIR, os.path.basename(keyname))
+        content = k.get_contents_to_filename(tmpf)
+        ds = self._open_file(tmpf, normalize=normalize)
         return ds
 
     def read_day(self, year, day, hours=range(12,24)):
@@ -97,10 +99,11 @@ class NOAAGOESS3(object):
         for sname, sgrouped in grouped_spatial: #max of 2 groups
             grouped_hourly = sgrouped.groupby(by=["hour"])
             for hname, hgroup in grouped_hourly: #limited to 24
+                print("Year: %4i, Day: %i, Hour: %i" % (year, day, hname))
+                hourly_das = []
                 grouped_minutes = hgroup.groupby(by=['minute'])
                 for mname, mgroup in grouped_minutes: # 60 minutes
                     mds = []
-                    print(hname, mname)
                     for i in mgroup.index:
                         ds = self.read_nc_from_s3(mgroup.loc[i].keyname)
                         if mgroup.loc[i].channel in [1,3,5]: #(1 km)
@@ -121,30 +124,55 @@ class NOAAGOESS3(object):
 
                     mds = xr.concat(mds, dim='band')
                     mds['t'] = ds['t']
-                    daily_das.append(mds)
-                    if len(daily_das) > 20:
+                    hourly_das.append(mds)
+                    if len(hourly_das) > 20:
                         break
 
-                daily_das = xr.concat(daily_das, dim='t')
-                return daily_das
+                hourly_das = xr.concat(hourly_das, dim='t')
+                shutil.rmtree(TEMPORARY_DIR)
+                yield hourly_das
 
 def read_from_s3():
     goes = NOAAGOESS3(channels=range(1,17))
     pairs = goes.year_day_pairs()
-    data = goes.read_day(pairs[-1][0], pairs[-1][1])
-    blocked_data = utils.blocks(data)
-    print(len(blocked_data), blocked_data[0].shape)
 
-def write_example_blocks(blocks):
+def write_example_blocks_to_s3(year, day, bucket_name='nex-goes-slowmo'):
+    conn = boto.connect_s3()
+    bucket = conn.get_bucket(bucket_name)
+
     counter = 0
-    for blocks in self.noaagoes.iterate(block_size=360):
-        split_blocks = np.concatenate([blocks[:,:6], blocks[:,4:10], blocks[:,7:]], axis=0)
-        for i, b in enumerate(split_blocks):
-            save_file = os.path.join(self.example_dir, "%07i.npy" % counter)
-            np.save(save_file, b)
-            counter += 1
-        print("count=%i" % counter)
+    goes = NOAAGOESS3(channels=range(1,7))
 
+
+    for data in goes.read_day(year, day):
+        blocked_data = utils.blocks(data)
+        print(len(blocked_data), blocked_data[0].shape)
+
+        if not os.path.exists(TEMPORARY_DIR):
+            os.makedirs(TEMPORARY_DIR)
+
+        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness
+        # overlap by 5 minutes
+
+        n = 20
+        for blocks in blocked_data:
+            idxs = np.arange(0, blocks.shape[0], 16)
+            for i in idxs:
+                if i + n > blocks.shape[0]:
+                    i = blocks.shape[0] - n
+
+                b = blocks[i:i+n]
+                fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                save_file = os.path.join(TEMPORARY_DIR, fname)
+                np.save(save_file, b)
+                k= boto.s3.key.Key(bucket)
+                k.key = 'train/%s' % fname
+                k.set_contents_from_filename(save_file)
+                os.remove(save_file)
+                counter += 1
+                print(fname, k, b.shape)
+
+                print("count=%i" % counter)
 
 if __name__ == "__main__":
     # make_video_images()
@@ -163,3 +191,5 @@ if __name__ == "__main__":
     #daytimes, daydata = goesc.read_day(2017, 120)
     #dayblocks = goesc.blocks(daydata, width=352)
     read_from_s3()
+    write_example_blocks_to_s3(2018, 2)
+
