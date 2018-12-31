@@ -9,6 +9,7 @@ from torch.utils import data
 import torchvision
 import unet
 import goes16
+import goes16s3
 
 from flownet import FlowWarper, InterpNet
 import eval_utils
@@ -22,9 +23,16 @@ def train_net(flow_net,
               gpu=False):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    flow_net = flow_net.cuda()
-    interp_net = interp_net.cuda()
+    print('device', device)
+    gpu = False
+    if device == "cuda:0":
+        gpu = True
 
+    warper = FlowWarper(gpu=gpu)
+    if gpu:
+        flow_net = flow_net.cuda()
+        interp_net = interp_net.cuda()
+        warper = warper.cuda()
 
     if not os.path.exists(model_path):
         os.makedirs(model_path)
@@ -33,11 +41,12 @@ def train_net(flow_net,
     if not os.path.exists("samples"):
         os.makedirs('samples')
 
-    data_params = {'batch_size': 10, 'shuffle': True,
-                   'num_workers': 4}
+    data_params = {'batch_size': 1, 'shuffle': True,
+                   'num_workers': 1}
 
     dir_data = '/raid/tj/GOES16/'
-    training_set = goes16.GOESDataset(example_dir='/raid/tj/GOES16/pytorch-training/')
+    #training_set = goes16.GOESDataset(example_dir='/raid/tj/GOES16/pytorch-training/')
+    training_set = goes16s3.GOESDatasetS3(buffer_size=1)
     training_generator = data.DataLoader(training_set, **data_params)
 
     optimizer = torch.optim.Adam(list(flow_net.parameters()) + list(interp_net.parameters()), lr=1e-4)
@@ -47,7 +56,6 @@ def train_net(flow_net,
     flow_net.train()
     interp_net.train()
 
-    warper = FlowWarper().cuda()
     step = 0
 
     statsfile = open(os.path.join(model_path, 'loss.txt'), 'w')
@@ -81,6 +89,7 @@ def train_net(flow_net,
             image_collector = []
             for i in range(1,T+1):
                 t = 1. * i / (T+1)
+                # Input Channels: 6, 6, 2, 2
                 I_t = interp_net(I0, I1, f_10, f_01, t)
 
                 f_t0 = -(1-t) * t * f_01 + t**2 * f_10
@@ -119,7 +128,7 @@ def train_net(flow_net,
 
 
             for jj, image in enumerate([I0] + image_collector + [I1]):
-                torchvision.utils.save_image((image), sample_image_file  % (step+1, jj), normalize=True)
+                torchvision.utils.save_image((image[:, [2,0,1]]), sample_image_file  % (step+1, jj), normalize=True)
 
             if step % 1 == 0:
                 losses = [loss_reconstruction.item(), loss_warp.item(), loss_smooth.item(), loss.item()]
@@ -141,4 +150,4 @@ def train_net(flow_net,
             step += 1
 
 if __name__ == "__main__":
-    train_net(unet.UNet(6, 4), InterpNet(16, 6))
+    train_net(unet.UNet(6*2, 4), InterpNet(6*4 + 4, 6, gpu=False))

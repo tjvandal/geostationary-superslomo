@@ -7,8 +7,9 @@ import torchvision
 import unet
 
 class FlowWarper(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, gpu=True):
         super(FlowWarper, self).__init__()
+        self.gpu = gpu
     # end
 
     def forward(self, tensorInput, tensorFlow):
@@ -16,7 +17,9 @@ class FlowWarper(torch.nn.Module):
             tensorHorizontal = torch.linspace(-1.0, 1.0, tensorFlow.size(3)).view(1, 1, 1, tensorFlow.size(3)).expand(tensorFlow.size(0), -1, tensorFlow.size(2), -1)
             tensorVertical = torch.linspace(-1.0, 1.0, tensorFlow.size(2)).view(1, 1, tensorFlow.size(2), 1).expand(tensorFlow.size(0), -1, -1, tensorFlow.size(3))
 
-            self.tensorGrid = torch.cat([ tensorHorizontal, tensorVertical ], 1).cuda()
+            self.tensorGrid = torch.cat([ tensorHorizontal, tensorVertical ], 1)
+            if self.gpu:
+                self.tensorGrid = self.tensorGrid.cuda()
         # end
 
         tensorFlow = torch.cat([ tensorFlow[:, 0:1, :, :] / ((tensorInput.size(3) - 1.0) / 2.0), tensorFlow[:, 1:2, :, :] / ((tensorInput.size(2) - 1.0) / 2.0) ], 1)
@@ -25,7 +28,7 @@ class FlowWarper(torch.nn.Module):
     # end
 
 class _FlowWarper(nn.Module):
-    def __init__(self, w, h, cuda=True):
+    def __init__(self, w, h, gpu=True):
         super(FlowWarper, self).__init__()
         x = np.arange(0,w)
         y = np.arange(0,h)
@@ -34,7 +37,7 @@ class _FlowWarper(nn.Module):
         self.h = h
         self.grid_x = torch.autograd.Variable(torch.Tensor(gx), requires_grad=False)#.cuda()
         self.grid_y = torch.autograd.Variable(torch.Tensor(gy), requires_grad=False)#.cuda()
-        if cuda:
+        if gpu:
             self.grid_x = self.grid_x.cuda()
             self.grid_y = self.grid_y.cuda()
 
@@ -50,11 +53,11 @@ class _FlowWarper(nn.Module):
         return img_tf
 
 class InterpNet(nn.Module):
-    def __init__(self, in_channels, out_channels, cuda=True):
+    def __init__(self, in_channels, out_channels, gpu=True):
         super(InterpNet, self).__init__()
-        self.warper = FlowWarper()
+        self.warper = FlowWarper(gpu=gpu)
         self.unet = unet.UNet(in_channels, out_channels)
-        if cuda:
+        if gpu:
             self.warper = self.warper.cuda()
             self.unet = self.unet.cuda()
 

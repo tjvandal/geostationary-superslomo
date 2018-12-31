@@ -5,6 +5,7 @@ import time
 import shutil
 
 import boto
+import boto3
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -102,6 +103,7 @@ class NOAAGOESS3(object):
                 print("Year: %4i, Day: %i, Hour: %i" % (year, day, hname))
                 hourly_das = []
                 grouped_minutes = hgroup.groupby(by=['minute'])
+
                 for mname, mgroup in grouped_minutes: # 60 minutes
                     mds = []
                     for i in mgroup.index:
@@ -132,64 +134,91 @@ class NOAAGOESS3(object):
                 shutil.rmtree(TEMPORARY_DIR)
                 yield hourly_das
 
-def read_from_s3():
-    goes = NOAAGOESS3(channels=range(1,17))
-    pairs = goes.year_day_pairs()
+class GOESDatasetS3(Dataset):
+    def __init__(self, s3_bucket_name="nex-goes-slowmo",
+                 s3_base_path="", buffer_size=60):
+        self.bucket_name = s3_bucket_name
+        self.resource = boto3.resource('s3')
+        self.bucket = self.resource.Bucket(s3_bucket_name)
+        self.s3_base_path = s3_base_path
+        self.buffer_size = buffer_size
+        self.s3_keys = list(self.bucket.objects.filter(Prefix=s3_base_path))
 
-def write_example_blocks_to_s3(year, day, bucket_name='nex-goes-slowmo'):
-    conn = boto.connect_s3()
-    bucket = conn.get_bucket(bucket_name)
+    def write_example_blocks_to_s3(self, year, day, mode="train"):
+        counter = 0
+        goes = NOAAGOESS3(channels=range(1,7))
 
-    counter = 0
-    goes = NOAAGOESS3(channels=range(1,7))
+        for data in goes.read_day(year, day):
+            blocked_data = utils.blocks(data, width=360)
+            print(len(blocked_data), blocked_data[0].shape)
 
+            if not os.path.exists(TEMPORARY_DIR):
+                os.makedirs(TEMPORARY_DIR)
 
-    for data in goes.read_day(year, day):
-        blocked_data = utils.blocks(data)
-        print(len(blocked_data), blocked_data[0].shape)
+            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness
+            # overlap by 5 minutes
 
-        if not os.path.exists(TEMPORARY_DIR):
-            os.makedirs(TEMPORARY_DIR)
+            n = 20
+            for blocks in blocked_data:
+                idxs = np.arange(0, blocks.shape[0], 16)
+                for i in idxs:
+                    if i + n > blocks.shape[0]:
+                        i = blocks.shape[0] - n
 
-        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness
-        # overlap by 5 minutes
+                    b = blocks[i:i+n]
+                    if np.all(np.isfinite(b)):
+                        fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                        save_file = os.path.join(TEMPORARY_DIR, fname)
+                        np.save(save_file, b)
+                        self.bucket.upload_file(save_file, '%s/%s' % (mode, fname))
+                        os.remove(save_file)
+                        counter += 1
+                        print(fname, b.shape)
 
-        n = 20
-        for blocks in blocked_data:
-            idxs = np.arange(0, blocks.shape[0], 16)
-            for i in idxs:
-                if i + n > blocks.shape[0]:
-                    i = blocks.shape[0] - n
+    def transform(self, block):
+        # randomly shift temporally
+        i = np.random.choice(range(0,5))
+        block = block[i:16+i]
 
-                b = blocks[i:i+n]
-                fname = "%04i_%03i_%07i.npy" % (year, day, counter)
-                save_file = os.path.join(TEMPORARY_DIR, fname)
-                np.save(save_file, b)
-                k= boto.s3.key.Key(bucket)
-                k.key = 'train/%s' % fname
-                k.set_contents_from_filename(save_file)
-                os.remove(save_file)
-                counter += 1
-                print(fname, k, b.shape)
+        # randomly shift vertically 
+        i = np.random.choice(range(0,8))
+        block = block[:,:,i:i+352]
 
-                print("count=%i" % counter)
+        # randomly shift horizontally
+        i = np.random.choice(range(0,8))
+        block = block[:,:,:,i:i+352]
+
+        # randomly flip up-down
+        #if np.random.uniform() > 0.5:
+            #block = block[:,::-1]
+            #block = np.flip(block, axis=1).copy()
+
+        # randomly flip right-left 
+        #if np.random.uniform() > 0.5:
+        #    block = block[:,:,::-1]
+        #    block = np.flip(block, axis=2).copy()
+
+        return block
+
+    def __len__(self):
+        return len(self.s3_keys)
+
+    def __getitem__(self, idx):
+        key = self.s3_keys[idx]
+        bio = io.BytesIO(key.get()['Body'].read())
+        block = np.load(bio)
+        block = self.transform(block)
+
+        I0 = torch.from_numpy(block[0])
+        I1 = torch.from_numpy(block[-1])
+        IT = torch.from_numpy(block[1:-1])
+
+        #I0 = I0.permute(2,0,1)
+        #I1 = I1.permute(2,0,1)
+        #IT = IT.permute(0,3,1,2)
+        return I0, I1, IT
 
 if __name__ == "__main__":
-    # make_video_images()
-    #for day in [0, 30, 60, 90, 120, 150, 180,
-    #            210, 240, 270, 300, 330, 360]:
-    #    download_day(day=day)
-    #download_day(120, product='ABI-L1b-RadM')
-    #obj = GOESDataset()
-    #obj.write_example_blocks()
-    #obj.__getitem__(0)
-    #goesc = NOAAGOESM()
-    #daydata = goesc.read_day(2017, 120)
-    #print(daydata.keys())
-    #goesc.read_day_hour_minute(2017, 120, 12, 2)
-
-    #daytimes, daydata = goesc.read_day(2017, 120)
-    #dayblocks = goesc.blocks(daydata, width=352)
-    read_from_s3()
-    write_example_blocks_to_s3(2018, 2)
-
+    goespytorch = GOESDatasetS3()
+    goespytorch.write_example_blocks_to_s3(2018,1)
+    goespytorch.__getitem__(0)
