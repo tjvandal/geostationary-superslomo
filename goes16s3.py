@@ -204,8 +204,11 @@ class GOESDatasetS3(Dataset):
         return len(self.s3_keys)
 
     def __getitem__(self, idx):
-        key = self.s3_keys[idx]
-        bio = io.BytesIO(key.get()['Body'].read())
+        key = self.s3_keys[idx].key
+       	s3 = boto3.resource('s3')
+        obj = s3.Object(self.bucket_name, key)
+
+        bio = io.BytesIO(obj.get()['Body'].read())
         block = np.load(bio)
         block = self.transform(block)
 

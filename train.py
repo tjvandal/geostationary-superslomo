@@ -42,7 +42,7 @@ def train_net(flow_net,
         os.makedirs('samples')
 
     data_params = {'batch_size': 1, 'shuffle': True,
-                   'num_workers': 1}
+                   'num_workers': 4}
 
     dir_data = '/raid/tj/GOES16/'
     #training_set = goes16.GOESDataset(example_dir='/raid/tj/GOES16/pytorch-training/')
@@ -62,17 +62,6 @@ def train_net(flow_net,
 
     for epoch in range(epochs):
         for I0, I1, IT in training_generator:
-            # this is a hack, should be ignored in data writing
-            if not np.all(np.isfinite(I0)):
-                print("I0 is not all finite")
-                continue
-            if not np.all(np.isfinite(I1)):
-                print("I1 is not all finite")
-                continue
-            if not np.all(np.isfinite(IT)):
-                print("IT is not all finite")
-                continue
-
             I0, I1, IT = I0.to(device), I1.to(device), IT.to(device)
             T = IT.shape[1]
 
@@ -103,6 +92,7 @@ def train_net(flow_net,
                 # perceptual loss can not currently be applied because classification are not defined
 
                 # warping loss
+                warper(I0, f_t0)
                 loss_warp_i= recon_l2_loss(I_t, warper(I0, f_t0)) + recon_l2_loss(I_t, warper(I1, f_t1))
                 warping_loss_collector.append(loss_warp_i)
 
@@ -150,4 +140,4 @@ def train_net(flow_net,
             step += 1
 
 if __name__ == "__main__":
-    train_net(unet.UNet(6*2, 4), InterpNet(6*4 + 4, 6, gpu=False))
+    train_net(unet.UNet(6*2, 4).cuda(), InterpNet(6*4 + 4, 6, gpu=True))
