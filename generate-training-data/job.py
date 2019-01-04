@@ -15,8 +15,8 @@ input_file = "emr-input.txt"
 with open(input_file, "w") as fopen:
     for i, (year, day) in enumerate(year_day_pairs):
         fopen.write("%04i\t%03i\n" % (year, day)) 
-	if i > 1:
-	     break
+        if i > 1:
+             break
 
 cmd = ['tar', '-cvf', 'emr-goes-dependencies.tar.gz', '../goes16s3.py', '../utils.py', 'mapper.py']
 subprocess.call(cmd)
@@ -27,7 +27,6 @@ bucket.upload_file('emr-goes-dependencies.tar.gz', 'emr-goes-dependencies.tar.gz
 bucket.upload_file(input_file, input_file)
 bucket.upload_file('emr_configs.sh', 'emr_configs.sh')
 bucket.upload_file('mapper.py', 'mapper.py')
-bucket.upload_file('reducer.py', 'reducer.py')
 
 emr = boto3.client('emr', region_name='us-east-1')
 resp = emr.run_job_flow(
@@ -80,7 +79,7 @@ resp = emr.run_job_flow(
 	 'ActionOnFailure': 'CANCEL_AND_WAIT',
          'HadoopJarStep': {
             'Args': ['hadoop-streaming',
-                     '-files',  's3://%s/mapper.py,s3://%s/reducer.py' % (BUCKET_NAME, BUCKET_NAME),
+                     '-files',  's3://%s/mapper.py' % (BUCKET_NAME),
                      '-mapper', 'python mapper.py',
                      #'-reducer','python reducer.py',
                      '-input',  's3://%s/%s' % (BUCKET_NAME, input_file),
