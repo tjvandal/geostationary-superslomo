@@ -11,8 +11,11 @@ import numpy as np
 import pandas as pd
 import scipy.misc
 
-import torch
-from torch.utils.data import Dataset, DataLoader
+try:
+    import torch
+    from torch.utils.data import Dataset, DataLoader
+except:
+    pass
 
 import utils
 
@@ -25,7 +28,7 @@ class NOAAGOESS3(object):
         self.bucket_name = 'noaa-goes16'
         self.product = product
         self.channels = channels
-        self.conn = boto.connect_s3()
+        self.conn = boto.connect_s3(host='s3.amazonaws.com')
         self.goes_bucket = self.conn.get_bucket(self.bucket_name)
 
     def year_day_pairs(self):
@@ -67,7 +70,7 @@ class NOAAGOESS3(object):
         return pd.DataFrame(data)
 
     def _open_file(self, f, normalize=True):
-        ds = xr.open_dataset(f, backend_kwargs={'diskless': True})
+        ds = xr.open_dataset(f)
         if normalize:
             mn = ds['min_radiance_value_of_valid_pixels'].values
             mx = ds['max_radiance_value_of_valid_pixels'].values
@@ -100,7 +103,6 @@ class NOAAGOESS3(object):
         for sname, sgrouped in grouped_spatial: #max of 2 groups
             grouped_hourly = sgrouped.groupby(by=["hour"])
             for hname, hgroup in grouped_hourly: #limited to 24
-                print("Year: %4i, Day: %i, Hour: %i" % (year, day, hname))
                 hourly_das = []
                 grouped_minutes = hgroup.groupby(by=['minute'])
 
@@ -150,7 +152,6 @@ class GOESDatasetS3(Dataset):
 
         for data in goes.read_day(year, day):
             blocked_data = utils.blocks(data, width=360)
-            print(len(blocked_data), blocked_data[0].shape)
 
             if not os.path.exists(TEMPORARY_DIR):
                 os.makedirs(TEMPORARY_DIR)
@@ -173,7 +174,6 @@ class GOESDatasetS3(Dataset):
                         self.bucket.upload_file(save_file, '%s/%s' % (mode, fname))
                         os.remove(save_file)
                         counter += 1
-                        print(fname, b.shape)
 
     def transform(self, block):
         # randomly shift temporally
