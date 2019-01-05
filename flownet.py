@@ -6,10 +6,10 @@ from torch import optim
 import torchvision
 import unet
 
-class FlowWarper(torch.nn.Module):
-    def __init__(self, gpu=True):
+class FlowWarper(nn.Module):
+    def __init__(self, device):
         super(FlowWarper, self).__init__()
-        self.gpu = gpu
+        self.device = device
     # end
 
     def forward(self, tensorInput, tensorFlow):
@@ -17,7 +17,7 @@ class FlowWarper(torch.nn.Module):
             tensorHorizontal = torch.linspace(-1.0, 1.0, tensorFlow.size(3)).view(1, 1, 1, tensorFlow.size(3)).expand(tensorFlow.size(0), -1, tensorFlow.size(2), -1)
             tensorVertical = torch.linspace(-1.0, 1.0, tensorFlow.size(2)).view(1, 1, tensorFlow.size(2), 1).expand(tensorFlow.size(0), -1, -1, tensorFlow.size(3))
 
-            self.tensorGrid = torch.cat([ tensorHorizontal, tensorVertical ], 1).cuda()
+            self.tensorGrid = torch.cat([ tensorHorizontal, tensorVertical ], 1).to(self.device)
         # end
 
         tensorFlow = torch.cat([ tensorFlow[:, 0:1, :, :] / ((tensorInput.size(3) - 1.0) / 2.0), tensorFlow[:, 1:2, :, :] / ((tensorInput.size(2) - 1.0) / 2.0) ], 1)
@@ -26,40 +26,28 @@ class FlowWarper(torch.nn.Module):
         return out
     # end
 
+class SloMoFlowNet(nn.Module):
+    '''
+    The Model:
+        I0 and I1 are model inputs
+        Flow computation predicts forward and backward optical flows
+    '''
+    def __init__(self, n_channels=6):
+        super(SloMoFlowNet, self).__init__()
+        self.n_channels = n_channels
+        self.flow_model  = unet.UNet(self.n_channels*2, 4)
 
-class _FlowWarper(nn.Module):
-    def __init__(self, w, h, gpu=True):
-        super(FlowWarper, self).__init__(gpu=gpu)
-        x = np.arange(0,w)
-        y = np.arange(0,h)
-        gx, gy = np.meshgrid(x,y)
-        self.w = w
-        self.h = h
-        self.grid_x = torch.autograd.Variable(torch.Tensor(gx), requires_grad=False)#.cuda()
-        self.grid_y = torch.autograd.Variable(torch.Tensor(gy), requires_grad=False)#.cuda()
-        if gpu:
-            self.grid_x = self.grid_x.cuda()
-            self.grid_y = self.grid_y.cuda()
+    def forward(self, x0, x1):
+        x = torch.cat([x0, x1], dim=1)
+        f = self.flow_model(x)
+        return f
 
-    def forward(self, img, uv):
-        u = uv[:,0,:,:]
-        v = uv[:,1,:,:]
-        X = self.grid_x.unsqueeze(0).expand_as(u) + u
-        Y = self.grid_y.unsqueeze(0).expand_as(v) + v
-        X = 2*(X/self.w - 0.5)
-        Y = 2*(Y/self.h - 0.5)
-        grid_tf = torch.stack((X,Y), dim=3)
-        img_tf = torch.nn.functional.grid_sample(img, grid_tf)
-        return img_tf
-
-class InterpNet(nn.Module):
-    def __init__(self, in_channels, out_channels, gpu=True):
-        super(InterpNet, self).__init__()
-        self.warper = FlowWarper(gpu=gpu)
-        self.unet = unet.UNet(in_channels, out_channels)
-        if gpu:
-            self.warper = self.warper.cuda()
-            self.unet = self.unet.cuda()
+class SloMoInterpNet(nn.Module):
+    def __init__(self, n_channels, device):
+        super(SloMoInterpNet, self).__init__()
+        self.device = device
+        self.warper = FlowWarper(device)
+        self.unet = unet.UNet(n_channels*4 + 4, n_channels)
 
     def forward(self, I0, I1, F0, F1, t):
         assert F0.shape[1] == 2
@@ -67,6 +55,7 @@ class InterpNet(nn.Module):
 
         f_t0 = -(1-t) * t * F0 + t**2 * F1
         f_t1 = (1-t)**2 * F0 - t*(1-t) * F1
+
         g0 = self.warper(I0, f_t0)
         g1 = self.warper(I1, f_t1)
 
@@ -86,4 +75,5 @@ class InterpNet(nn.Module):
         g_1_ft_1 = self.warper(I1, f_t1 + delta_f_t1)
         I_t = (1-t) * V_t0 * g_0_ft_0 + t * V_t1 * g_1_ft_1
         I_t /= normalization
-        return I_t
+
+        return I_t, g0, g1

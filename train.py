@@ -11,11 +11,10 @@ import unet
 import goes16
 import goes16s3
 
-from flownet import FlowWarper, InterpNet
+from flownet import FlowWarper, SloMoFlowNet, SloMoInterpNet
 import eval_utils
 
-def train_net(flow_net,
-              interp_net,
+def train_net(n_channels=6,
               model_path='./saved-models/default/',
               epochs=5,
               batch_size=1,
@@ -23,16 +22,20 @@ def train_net(flow_net,
               gpu=False):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print('device', device)
-    gpu = False
-    if device == "cuda:0":
-        gpu = True
 
-    warper = FlowWarper(gpu=gpu)
-    if gpu:
-        flow_net = flow_net.cuda()
-        interp_net = interp_net.cuda()
-        warper = warper.cuda()
+    flownet = SloMoFlowNet(n_channels)
+    interpnet = SloMoInterpNet(n_channels, device)
+    warper = FlowWarper(device)
+
+    if torch.cuda.device_count() > 0:
+        print("Let's use %i GPUs!" % torch.cuda.device_count())
+        flownet = nn.DataParallel(flownet)
+        interpnet = nn.DataParallel(interpnet)
+        warper = nn.DataParallel(warper)
+
+    flownet = flownet.to(device)
+    interpnet = interpnet.to(device)
+    warper = warper.to(device)
 
     if not os.path.exists(model_path):
         os.makedirs(model_path)
@@ -44,45 +47,39 @@ def train_net(flow_net,
     data_params = {'batch_size': 1, 'shuffle': True,
                    'num_workers': 4}
 
-    dir_data = '/raid/tj/GOES16/'
-    #training_set = goes16.GOESDataset(example_dir='/raid/tj/GOES16/pytorch-training/')
     training_set = goes16s3.GOESDatasetS3(buffer_size=1)
     training_generator = data.DataLoader(training_set, **data_params)
 
-    optimizer = torch.optim.Adam(list(flow_net.parameters()) + list(interp_net.parameters()), lr=1e-4)
-
+    # define optimizer
+    optimizer = torch.optim.Adam(list(flownet.parameters()) + list(interpnet.parameters()),
+                                 lr=1e-4)
     recon_l2_loss = nn.MSELoss()
 
-    flow_net.train()
-    interp_net.train()
+    flownet.train()
+    interpnet.train()
 
     step = 0
-
     statsfile = open(os.path.join(model_path, 'loss.txt'), 'w')
-
     for epoch in range(epochs):
         for I0, I1, IT in training_generator:
             I0, I1, IT = I0.to(device), I1.to(device), IT.to(device)
             T = IT.shape[1]
+            f = flownet(I0, I1)
 
-            x = torch.cat([I0, I1], dim=1)
-            f = flow_net(x)
-
+            # x, y optical flows
             f_10 = f[:,:2]
             f_01 = f[:,2:]
 
+            # collect loss data and predictions
             loss_vector = []
             perceptual_loss_collector = []
             warping_loss_collector = []
-
             image_collector = []
             for i in range(1,T+1):
                 t = 1. * i / (T+1)
-                # Input Channels: 6, 6, 2, 2
-                I_t = interp_net(I0, I1, f_10, f_01, t)
 
-                f_t0 = -(1-t) * t * f_01 + t**2 * f_10
-                f_t1 = (1-t)**2 * f_01 - t*(1-t)*f_10
+                # Input Channels: predicted image and warped without derivatives
+                I_t, g0, g1 = interpnet(I0, I1, f_10, f_01, t)
                 image_collector.append(I_t)
 
                 # reconstruction loss
@@ -92,35 +89,42 @@ def train_net(flow_net,
                 # perceptual loss can not currently be applied because classification are not defined
 
                 # warping loss
-                warper(I0, f_t0)
-                loss_warp_i= recon_l2_loss(I_t, warper(I0, f_t0)) + recon_l2_loss(I_t, warper(I1, f_t1))
+                loss_warp_i= recon_l2_loss(I_t, g0) \
+                            + recon_l2_loss(I_t, g1)
+
                 warping_loss_collector.append(loss_warp_i)
 
 
+            # compute the reconstruction loss
             loss_reconstruction = sum(loss_vector)  / T
 
+            # compute the total warping loss
             loss_warp = recon_l2_loss(I0, warper(I1, f_01)) + recon_l2_loss(I1, warper(I0, f_10))
             loss_warp += sum(warping_loss_collector)/T
 
+            # compute the smoothness loss
             loss_smooth_1_0 = torch.mean(torch.abs(f_10[:,:,:,:-1] - f_10[:,:,:,1:])) +\
                               torch.mean(torch.abs(f_10[:,:,:-1,:] - f_10[:,:,1:,:]))
             loss_smooth_0_1 = torch.mean(torch.abs(f_01[:,:,:,:-1] - f_01[:,:,:,1:])) +\
                               torch.mean(torch.abs(f_01[:,:,:-1,:] - f_01[:,:,1:,:]))
             loss_smooth = loss_smooth_0_1 + loss_smooth_1_0
 
+            # take a weighted sum of the losses
             loss = loss_reconstruction + 0.4 * loss_warp #+ 0.5 * loss_smooth
 
+            # compute the gradient
             optimizer.zero_grad()
-
             loss.backward()
             optimizer.step()
 
 
 
-            for jj, image in enumerate([I0] + image_collector + [I1]):
-                torchvision.utils.save_image((image[:, [2,0,1]]), sample_image_file  % (step+1, jj), normalize=True)
 
             if step % 1 == 0:
+                #for jj, image in enumerate([I0] + image_collector + [I1]):
+                    #torchvision.utils.save_image((image[:, [2,0,1]]), 
+                    #            sample_image_file  % (step+1, jj), normalize=True)
+
                 losses = [loss_reconstruction.item(), loss_warp.item(), loss_smooth.item(), loss.item()]
                 out = "(Epoch: %i, Iteration %i) Reconstruction Loss=%2.6f\tWarping Loss=%2.6f\tSmoothing Loss=%2.6f"\
                       "\tTotal Loss=%2.6f" % (epoch, step, losses[0], losses[1], losses[2], losses[3])
@@ -134,10 +138,10 @@ def train_net(flow_net,
                 statsfile.write('%s\n' % ','.join(losses))
                 #psnrs = [eval_utils.psnr(image_collector[i], IT[i]) for i in range(len(image_collector))]
                 #print(psnrs) 
-                torch.save(flow_net, os.path.join(model_path, 'flownet.torch'))
-                torch.save(interp_net, os.path.join(model_path, 'interpnet.torch'))
+                torch.save(flownet, os.path.join(model_path, 'flownet.torch'))
+                torch.save(interpnet, os.path.join(model_path, 'interpnet.torch'))
 
             step += 1
 
 if __name__ == "__main__":
-    train_net(unet.UNet(6*2, 4).cuda(), InterpNet(6*4 + 4, 6, gpu=True))
+    train_net()

@@ -138,7 +138,7 @@ class NOAAGOESS3(object):
 
 class GOESDatasetS3(Dataset):
     def __init__(self, s3_bucket_name="nex-goes-slowmo",
-                 s3_base_path="", buffer_size=60):
+                 s3_base_path="train/", buffer_size=60):
         self.bucket_name = s3_bucket_name
         self.resource = boto3.resource('s3')
         self.bucket = self.resource.Bucket(s3_bucket_name)
@@ -205,11 +205,16 @@ class GOESDatasetS3(Dataset):
 
     def __getitem__(self, idx):
         key = self.s3_keys[idx].key
-       	s3 = boto3.resource('s3')
+        s3 = boto3.resource('s3')
         obj = s3.Object(self.bucket_name, key)
 
         bio = io.BytesIO(obj.get()['Body'].read())
-        block = np.load(bio)
+        try:
+            block = np.load(bio)
+        except Exception as err:
+            print(err)
+            print(key)
+            raise TypeError
         block = self.transform(block)
 
         I0 = torch.from_numpy(block[0])
