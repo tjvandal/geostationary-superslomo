@@ -6,21 +6,20 @@ import shutil
 
 import boto
 import boto3
+import botocore
 import xarray as xr
 import numpy as np
 import pandas as pd
 import scipy.misc
+import psutil
 
-try:
-    import torch
-    from torch.utils.data import Dataset, DataLoader
-except:
-    pass
+import torch
+from torch.utils.data import Dataset, DataLoader
 
 import utils
 
 # temporary directory is used to save file from s3 and read via xarray
-TEMPORARY_DIR = './tmp'
+TEMPORARY_DIR = '/tmp'
 
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
@@ -83,11 +82,16 @@ class NOAAGOESS3(object):
         k = boto.s3.key.Key(self.goes_bucket)
         k.key = keyname
         tmpf = os.path.join(TEMPORARY_DIR, os.path.basename(keyname))
-        content = k.get_contents_to_filename(tmpf)
-        ds = self._open_file(tmpf, normalize=normalize)
-        return ds
+        if k.exists():
+            content = k.get_contents_to_filename(tmpf)
+            ds = self._open_file(tmpf, normalize=normalize)
+        else:
+            ds = None
+            tmpf = None
 
-    def read_day(self, year, day, hours=range(12,24)):
+        return ds, tmpf
+
+    def read_day(self, year, day, hours=range(12,25)):
         '''
         Reads and joins product data for entire day in temporal order.
         args:
@@ -98,18 +102,26 @@ class NOAAGOESS3(object):
         '''
         t0 = time.time()
         keys_df = self.day_keys(year, day, hours=hours)
+        if len(keys_df) == 0: return
+
         grouped_spatial = keys_df.groupby(by=['spatial'])
         daily_das = []
         for sname, sgrouped in grouped_spatial: #max of 2 groups
             grouped_hourly = sgrouped.groupby(by=["hour"])
             for hname, hgroup in grouped_hourly: #limited to 24
+                print("Day", day, "Hour", hname)
                 hourly_das = []
+                hourly_files = []
                 grouped_minutes = hgroup.groupby(by=['minute'])
 
                 for mname, mgroup in grouped_minutes: # 60 minutes
                     mds = []
                     for i in mgroup.index:
-                        ds = self.read_nc_from_s3(mgroup.loc[i].keyname)
+                        ds, f = self.read_nc_from_s3(mgroup.loc[i].keyname)
+                        hourly_files.append(f)
+                        if f is None:
+                            break
+
                         if mgroup.loc[i].channel in [1,3,5]: #(1 km)
                             newds = utils.interp_da2d(ds.Rad, 1./2, fillna=False)
                         elif mgroup.loc[i].channel == 2: #(0.5 km)
@@ -123,18 +135,37 @@ class NOAAGOESS3(object):
 
                         newds['band'] = mgroup.loc[i].channel
                         mds.append(newds)
-                        mds[-1]['x'].values = mds[0]['x'].values
-                        mds[-1]['y'].values = mds[0]['y'].values
+                        try:
+                            mds[-1]['x'].values = mds[0]['x'].values
+                            mds[-1]['y'].values = mds[0]['y'].values
+                        except ValueError:
+                            print('spatial', sname, 'hname', hname, 'mname', mname,
+                                  'mds[-1]', mds[-1], 'mds[0]', mds[0])
+                            raise
+                    if f is None: # missing a minute in this hour, just skip it for now
+                        break
 
+                    #print("Memory", psutil.virtual_memory()[2])
                     mds = xr.concat(mds, dim='band')
                     mds['t'] = ds['t']
                     hourly_das.append(mds)
-                    if len(hourly_das) > 20:
-                        break
 
+                    #print("Datasets this hour", len(hourly_das), "day", day, "hour", hname, "Memory Percent",
+                    #psutil.virtual_memory()[2])
+                if len(hourly_das) == 0: break
+
+                x0 = hourly_das[0].x.values
+                xn = hourly_das[-1].x.values
+                y0 = hourly_das[0].y.values
+                yn = hourly_das[-1].y.values
+                
+                if not np.all(x0 == xn): break
+                if not np.all(y0 == yn): break
+                
                 hourly_das = xr.concat(hourly_das, dim='t')
-                shutil.rmtree(TEMPORARY_DIR)
                 yield hourly_das
+
+                [os.remove(f) for f in hourly_files]
 
 class GOESDatasetS3(Dataset):
     def __init__(self, s3_bucket_name="nex-goes-slowmo",
@@ -145,12 +176,17 @@ class GOESDatasetS3(Dataset):
         self.s3_base_path = s3_base_path
         self.buffer_size = buffer_size
         self.s3_keys = list(self.bucket.objects.filter(Prefix=s3_base_path))
+        
 
-    def write_example_blocks_to_s3(self, year, day, mode="train"):
+    def write_example_blocks_to_s3(self, year, day, mode="train", channels=range(1,17)):
         counter = 0
-        goes = NOAAGOESS3(channels=range(1,7))
+        goes = NOAAGOESS3(channels=channels)
+
+        yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (mode, year, day)) 
+        if len(list(yeardaykeys)) > 0: return
 
         for data in goes.read_day(year, day):
+            print(data.shape)
             blocked_data = utils.blocks(data, width=360)
 
             if not os.path.exists(TEMPORARY_DIR):
@@ -170,6 +206,7 @@ class GOESDatasetS3(Dataset):
                     if np.all(np.isfinite(b)):
                         fname = "%04i_%03i_%07i.npy" % (year, day, counter)
                         save_file = os.path.join(TEMPORARY_DIR, fname)
+                        print("saved file: %s" % save_file)
                         np.save(save_file, b)
                         self.bucket.upload_file(save_file, '%s/%s' % (mode, fname))
                         os.remove(save_file)
@@ -228,5 +265,5 @@ class GOESDatasetS3(Dataset):
 
 if __name__ == "__main__":
     goespytorch = GOESDatasetS3()
-    goespytorch.write_example_blocks_to_s3(2018,1)
-    goespytorch.__getitem__(0)
+    goespytorch.write_example_blocks_to_s3(2017,74, channels=range(1,17))
+    #goespytorch.__getitem__(0)
