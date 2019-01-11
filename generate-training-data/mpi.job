@@ -1,0 +1,13 @@
+#!/bin/sh
+
+#$ -cwd
+
+#$ -N TrainingData 
+
+#$ -pe mpi 40
+
+#$ -j y
+
+date
+
+/usr/lib64/openmpi/bin/mpirun ./training_data_mpi_job.py > larger.out

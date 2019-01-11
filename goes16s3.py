@@ -178,12 +178,17 @@ class GOESDatasetS3(Dataset):
         self.s3_keys = list(self.bucket.objects.filter(Prefix=s3_base_path))
         
 
+    def in_s3(self, year, day, mode):
+        yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (mode, year, day)) 
+        if len(list(yeardaykeys)) > 0: 
+            return True
+
+        return False
+
     def write_example_blocks_to_s3(self, year, day, mode="train", channels=range(1,17)):
         counter = 0
         goes = NOAAGOESS3(channels=channels)
-
-        yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (mode, year, day)) 
-        if len(list(yeardaykeys)) > 0: return
+        if self.in_s3(year, day, mode):  return
 
         for data in goes.read_day(year, day):
             print(data.shape)
