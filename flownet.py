@@ -47,7 +47,7 @@ class SloMoInterpNet(nn.Module):
         super(SloMoInterpNet, self).__init__()
         self.device = device
         self.warper = FlowWarper(device)
-        self.unet = unet.UNet(n_channels*4 + 4, n_channels)
+        self.unet = unet.UNet(n_channels*4 + 4, 6)
 
     def forward(self, I0, I1, F0, F1, t):
         assert F0.shape[1] == 2

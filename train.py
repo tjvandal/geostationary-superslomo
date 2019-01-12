@@ -14,7 +14,7 @@ import goes16s3
 from flownet import FlowWarper, SloMoFlowNet, SloMoInterpNet
 import eval_utils
 
-def train_net(n_channels=6,
+def train_net(n_channels=3,
               model_path='./saved-models/default/',
               epochs=5,
               batch_size=1,
@@ -60,6 +60,7 @@ def train_net(n_channels=6,
 
     step = 0
     statsfile = open(os.path.join(model_path, 'loss.txt'), 'w')
+    print("Begin Training")
     for epoch in range(epochs):
         for I0, I1, IT in training_generator:
             I0, I1, IT = I0.to(device), I1.to(device), IT.to(device)
