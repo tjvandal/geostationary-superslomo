@@ -176,7 +176,7 @@ class GOESDatasetS3(Dataset):
         self.s3_base_path = s3_base_path
         self.buffer_size = buffer_size
         self.s3_keys = list(self.bucket.objects.filter(Prefix=s3_base_path))
-        
+        self.N_keys = len(self.s3_keys)
 
     def in_s3(self, year, day, mode):
         yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (mode, year, day)) 
@@ -243,14 +243,24 @@ class GOESDatasetS3(Dataset):
         return block
 
     def __len__(self):
-        return len(self.s3_keys)
+        return self.N_keys
 
     def __getitem__(self, idx):
-        key = self.s3_keys[idx].key
+        key = self.s3_keys[idx]
+        if key is None:
+            return self.__getitem__(idx + 1 % self.N_keys)
+
+        key = key.key
         s3 = boto3.resource('s3')
         obj = s3.Object(self.bucket_name, key)
 
+        #try:
         bio = io.BytesIO(obj.get()['Body'].read())
+        #except botocore.Exceptions.ClientError as ex:
+        #    if obj['Error']['Code'] == 'NoSuchKey':
+        #        return self.__getitem__(idx + 1 % self.N_keys)
+        #    else:
+        #        raise ex
         try:
             block = np.load(bio)
         except Exception as err:
@@ -262,10 +272,13 @@ class GOESDatasetS3(Dataset):
         I0 = torch.from_numpy(block[0])
         I1 = torch.from_numpy(block[-1])
         IT = torch.from_numpy(block[1:-1])
+        try:
+            assert IT.shape[1] == 3
+        except AssertionError:
+            obj.delete()
+            self.s3_keys[idx] = None
+            return self.__getitem__(idx + 1 % self.N_keys)
 
-        #I0 = I0.permute(2,0,1)
-        #I1 = I1.permute(2,0,1)
-        #IT = IT.permute(0,3,1,2)
         return I0, I1, IT
 
 if __name__ == "__main__":

@@ -7,9 +7,9 @@ import torchvision
 import unet
 
 class FlowWarper(nn.Module):
-    def __init__(self, device):
+    def __init__(self):
         super(FlowWarper, self).__init__()
-        self.device = device
+        #self.device = device
     # end
 
     def forward(self, tensorInput, tensorFlow):
@@ -17,11 +17,11 @@ class FlowWarper(nn.Module):
             tensorHorizontal = torch.linspace(-1.0, 1.0, tensorFlow.size(3)).view(1, 1, 1, tensorFlow.size(3)).expand(tensorFlow.size(0), -1, tensorFlow.size(2), -1)
             tensorVertical = torch.linspace(-1.0, 1.0, tensorFlow.size(2)).view(1, 1, tensorFlow.size(2), 1).expand(tensorFlow.size(0), -1, -1, tensorFlow.size(3))
 
-            self.tensorGrid = torch.cat([ tensorHorizontal, tensorVertical ], 1).to(self.device)
+            self.tensorGrid = torch.cat([ tensorHorizontal, tensorVertical ], 1)
         # end
 
+        self.tensorGrid = self.tensorGrid.cuda()
         tensorFlow = torch.cat([ tensorFlow[:, 0:1, :, :] / ((tensorInput.size(3) - 1.0) / 2.0), tensorFlow[:, 1:2, :, :] / ((tensorInput.size(2) - 1.0) / 2.0) ], 1)
-
         out = torch.nn.functional.grid_sample(input=tensorInput, grid=(self.tensorGrid + tensorFlow).permute(0, 2, 3, 1), mode='bilinear', padding_mode='border')
         return out
     # end
@@ -43,21 +43,23 @@ class SloMoFlowNet(nn.Module):
         return f
 
 class SloMoInterpNet(nn.Module):
-    def __init__(self, n_channels, device):
+    def __init__(self, n_channels):
         super(SloMoInterpNet, self).__init__()
-        self.device = device
-        self.warper = FlowWarper(device)
+        #self.device = device
+        self.warper = FlowWarper()
         self.unet = unet.UNet(n_channels*4 + 4, 6)
 
     def forward(self, I0, I1, F0, F1, t):
         assert F0.shape[1] == 2
         assert F1.shape[1] == 2
-
         f_t0 = -(1-t) * t * F0 + t**2 * F1
         f_t1 = (1-t)**2 * F0 - t*(1-t) * F1
 
         g0 = self.warper(I0, f_t0)
         g1 = self.warper(I1, f_t1)
+        #next_index = g0.device.index + 1
+        g0 = g0.cuda()
+        g1 = g1.cuda()
 
         x_flow = torch.cat([I0, I1, f_t0, f_t1, g0, g1], 1)
 
@@ -75,5 +77,4 @@ class SloMoInterpNet(nn.Module):
         g_1_ft_1 = self.warper(I1, f_t1 + delta_f_t1)
         I_t = (1-t) * V_t0 * g_0_ft_0 + t * V_t1 * g_1_ft_1
         I_t /= normalization
-
         return I_t, g0, g1

@@ -1,14 +1,14 @@
 import sys
 import os
-import numpy as np
+import time
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim
 from torch.utils import data
 import torchvision
 import unet
-import goes16
 import goes16s3
 
 from flownet import FlowWarper, SloMoFlowNet, SloMoInterpNet
@@ -17,15 +17,15 @@ import eval_utils
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
               epochs=5,
-              batch_size=1,
+              batch_size=8,
               val_percent=0.05,
               gpu=False):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    flownet = SloMoFlowNet(n_channels)
-    interpnet = SloMoInterpNet(n_channels, device)
-    warper = FlowWarper(device)
+    flownet = SloMoFlowNet(n_channels)#.cuda()
+    interpnet = SloMoInterpNet(n_channels)#.cuda()
+    warper = FlowWarper()#.cuda()
 
     if torch.cuda.device_count() > 0:
         print("Let's use %i GPUs!" % torch.cuda.device_count())
@@ -44,8 +44,8 @@ def train_net(n_channels=3,
     if not os.path.exists("samples"):
         os.makedirs('samples')
 
-    data_params = {'batch_size': 1, 'shuffle': True,
-                   'num_workers': 4}
+    data_params = {'batch_size': batch_size, 'shuffle': True,
+                   'num_workers': 1}
 
     training_set = goes16s3.GOESDatasetS3(buffer_size=1)
     training_generator = data.DataLoader(training_set, **data_params)
@@ -59,14 +59,16 @@ def train_net(n_channels=3,
     interpnet.train()
 
     step = 0
+    first_n_T = None
     statsfile = open(os.path.join(model_path, 'loss.txt'), 'w')
     print("Begin Training")
     for epoch in range(epochs):
         for I0, I1, IT in training_generator:
+            t0 = time.time()
+            if I0.shape[1] != n_channels: continue
             I0, I1, IT = I0.to(device), I1.to(device), IT.to(device)
             T = IT.shape[1]
             f = flownet(I0, I1)
-
             # x, y optical flows
             f_10 = f[:,:2]
             f_01 = f[:,2:]
@@ -95,7 +97,6 @@ def train_net(n_channels=3,
 
                 warping_loss_collector.append(loss_warp_i)
 
-
             # compute the reconstruction loss
             loss_reconstruction = sum(loss_vector)  / T
 
@@ -119,16 +120,20 @@ def train_net(n_channels=3,
             optimizer.step()
 
 
-
-
             if step % 1 == 0:
                 #for jj, image in enumerate([I0] + image_collector + [I1]):
                     #torchvision.utils.save_image((image[:, [2,0,1]]), 
                     #            sample_image_file  % (step+1, jj), normalize=True)
 
                 losses = [loss_reconstruction.item(), loss_warp.item(), loss_smooth.item(), loss.item()]
-                out = "(Epoch: %i, Iteration %i) Reconstruction Loss=%2.6f\tWarping Loss=%2.6f\tSmoothing Loss=%2.6f"\
-                      "\tTotal Loss=%2.6f" % (epoch, step, losses[0], losses[1], losses[2], losses[3])
+                if losses[3] > 1000:
+                    print("I0", np.histogram(I0.cpu().flatten()))
+                    print("I1", np.histogram(I1.cpu().flatten()))
+                    print("IT", np.histogram(IT.cpu().flatten()))
+                    return
+
+                out = "(Epoch: %i, Iteration %i, Iteration time: %1.4f) Reconstruction Loss=%2.6f\tWarping Loss=%2.6f\tSmoothing Loss=%2.6f"\
+                      "\tTotal Loss=%2.6f" % (epoch, step, time.time()-t0, losses[0], losses[1], losses[2], losses[3])
                 print(out)
                 if np.isnan(losses[0]):
                     for k, l in enumerate([l.item() for l in loss_vector]):
@@ -139,6 +144,8 @@ def train_net(n_channels=3,
                 statsfile.write('%s\n' % ','.join(losses))
                 #psnrs = [eval_utils.psnr(image_collector[i], IT[i]) for i in range(len(image_collector))]
                 #print(psnrs) 
+
+            if step % 100 == 0:
                 torch.save(flownet, os.path.join(model_path, 'flownet.torch'))
                 torch.save(interpnet, os.path.join(model_path, 'interpnet.torch'))
 
