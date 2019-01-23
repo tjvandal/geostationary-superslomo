@@ -158,7 +158,7 @@ class NOAAGOESS3(object):
                 xn = hourly_das[-1].x.values
                 y0 = hourly_das[0].y.values
                 yn = hourly_das[-1].y.values
-                
+
                 if not np.all(x0 == xn): break
                 if not np.all(y0 == yn): break
                 
@@ -169,26 +169,28 @@ class NOAAGOESS3(object):
 
 class GOESDatasetS3(Dataset):
     def __init__(self, s3_bucket_name="nex-goes-slowmo",
-                 s3_base_path="train/", buffer_size=60):
+                 s3_base_path="train/", buffer_size=60,
+                 n_upsample=5, n_overlap=3):
         self.bucket_name = s3_bucket_name
         self.resource = boto3.resource('s3')
         self.bucket = self.resource.Bucket(s3_bucket_name)
         self.s3_base_path = s3_base_path
         self.buffer_size = buffer_size
-        self.s3_keys = list(self.bucket.objects.filter(Prefix=s3_base_path))
+        self.s3_keys = list(self.bucket.objects.filter(Prefix=self.s3_base_path))
         self.N_keys = len(self.s3_keys)
+        self.n_upsample = n_upsample
+        self.n_overlap = n_overlap
 
-    def in_s3(self, year, day, mode):
-        yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (mode, year, day)) 
-        if len(list(yeardaykeys)) > 0: 
+    def in_s3(self, year, day):
+        yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (self.s3_base_path, year, day)) 
+        if len(list(yeardaykeys)) > 0:
             return True
-
         return False
 
-    def write_example_blocks_to_s3(self, year, day, mode="train", channels=range(1,17)):
+    def write_example_blocks_to_s3(self, year, day, channels=range(1,17)):
         counter = 0
         goes = NOAAGOESS3(channels=channels)
-        if self.in_s3(year, day, mode):  return
+        if self.in_s3(year, day):  return
 
         for data in goes.read_day(year, day):
             print(data.shape)
@@ -197,12 +199,12 @@ class GOESDatasetS3(Dataset):
             if not os.path.exists(TEMPORARY_DIR):
                 os.makedirs(TEMPORARY_DIR)
 
-            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness
+            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
             # overlap by 5 minutes
 
-            n = 20
+            n = self.n_upsample + self.n_overlap + 1
             for blocks in blocked_data:
-                idxs = np.arange(0, blocks.shape[0], 16)
+                idxs = np.arange(0, blocks.shape[0], self.n_upsample)
                 for i in idxs:
                     if i + n > blocks.shape[0]:
                         i = blocks.shape[0] - n
@@ -213,14 +215,15 @@ class GOESDatasetS3(Dataset):
                         save_file = os.path.join(TEMPORARY_DIR, fname)
                         print("saved file: %s" % save_file)
                         np.save(save_file, b)
-                        self.bucket.upload_file(save_file, '%s/%s' % (mode, fname))
+                        self.bucket.upload_file(save_file, '%s/%s' % (self.s3_base_path, fname))
                         os.remove(save_file)
                         counter += 1
 
     def transform(self, block):
+        n_select = self.n_upsample + 1
         # randomly shift temporally
-        i = np.random.choice(range(0,5))
-        block = block[i:16+i]
+        i = np.random.choice(range(0,self.n_overlap))
+        block = block[i:n_select+i]
 
         # randomly shift vertically 
         i = np.random.choice(range(0,8))
@@ -282,6 +285,6 @@ class GOESDatasetS3(Dataset):
         return I0, I1, IT
 
 if __name__ == "__main__":
-    goespytorch = GOESDatasetS3()
-    goespytorch.write_example_blocks_to_s3(2017,74, channels=range(1,17))
-    #goespytorch.__getitem__(0)
+    goespytorch = GOESDatasetS3(s3_base_path='slomo-5min')
+    goespytorch.write_example_blocks_to_s3(2017, 74, channels=range(1,17))
+    print goespytorch.__getitem__(0)[2].shape
