@@ -1,8 +1,6 @@
 import sys
 import os
 import time
-import matplotlib
-matplotlib.use("TkAgg")
 
 import numpy as np
 import torch
@@ -13,10 +11,8 @@ import torchvision
 import unet
 import goes16s3
 
-from flownet import FlowWarper, SloMoFlowNet, SloMoInterpNet
+from flownet import FlowWarper, SloMoFlowNetMV, SloMoInterpNetMV
 import eval_utils
-
-torch.manual_seed(0)
 
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
@@ -28,8 +24,8 @@ def train_net(n_channels=3,
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    flownet = SloMoFlowNet(n_channels)#.cuda()
-    interpnet = SloMoInterpNet(n_channels)#.cuda()
+    flownet = SloMoFlowNetMV(n_channels)#.cuda()
+    interpnet = SloMoInterpNetMV(n_channels)#.cuda()
     warper = FlowWarper()#.cuda()
 
     if torch.cuda.device_count() > 0:
@@ -50,9 +46,9 @@ def train_net(n_channels=3,
         os.makedirs('samples')
 
     data_params = {'batch_size': batch_size, 'shuffle': True,
-                   'num_workers': 1}
+                   'num_workers': 4}
 
-    training_set = goes16s3.GOESDatasetS3(s3_base_path='slomo-band1-5min/')
+    training_set = goes16s3.GOESDatasetS3(s3_base_path='slomo-rgb-5min/')
     training_generator = data.DataLoader(training_set, **data_params)
 
     # define optimizer
@@ -73,16 +69,16 @@ def train_net(n_channels=3,
             if I0.shape[1] != n_channels: continue
             I0, I1, IT = I0.to(device), I1.to(device), IT.to(device)
             T = IT.shape[1]
-            f = flownet(I0, I1)
+            f = flownet(I0, I1)  # optical flows per channel
             # x, y optical flows
-            f_10 = f[:,:2]
-            f_01 = f[:,2:]
+            f_10 = f[:,:2*n_channels]
+            f_01 = f[:,2*n_channels:]
 
             # collect loss data and predictions
             loss_vector = []
+            perceptual_loss_collector = []
             warping_loss_collector = []
             image_collector = []
-            g0_flows, g1_flows = [], []
             for i in range(1,T+1):
                 t = 1. * i / (T+1)
 
@@ -93,8 +89,6 @@ def train_net(n_channels=3,
                 # reconstruction loss
                 loss_recon = recon_l2_loss(I_t, IT[:, i-1])
                 loss_vector.append(loss_recon)
-                if (loss_recon.item() > 10) and (step > 5):
-                    break
 
                 # perceptual loss can not currently be applied because classification are not defined
 
@@ -108,7 +102,13 @@ def train_net(n_channels=3,
             loss_reconstruction = sum(loss_vector)  / T
 
             # compute the total warping loss
-            loss_warp = recon_l2_loss(I0, warper(I1, f_01)) + recon_l2_loss(I1, warper(I0, f_10))
+            I_hat_0, I_hat_1 = [], []
+            for c in range(n_channels):
+                I_hat_0.append(warper(I1[:,c].unsqueeze(1), f_01[:,c*2:(c+1)*2]))
+                I_hat_1.append(warper(I0[:,c].unsqueeze(1), f_10[:,c*2:(c+1)*2]))
+
+            loss_warp = recon_l2_loss(I0, torch.cat(I_hat_0, 1)) +\
+                        recon_l2_loss(I1, torch.cat(I_hat_1, 1))
             loss_warp += sum(warping_loss_collector)/T
 
             # compute the smoothness loss
@@ -125,52 +125,24 @@ def train_net(n_channels=3,
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            IT_hat = torch.cat(image_collector, 1)
 
             if step % 1 == 0:
                 #for jj, image in enumerate([I0] + image_collector + [I1]):
                     #torchvision.utils.save_image((image[:, [2,0,1]]), 
                     #            sample_image_file  % (step+1, jj), normalize=True)
 
-                losses = [loss_reconstruction.item(), loss_warp.item(), loss_smooth.item(), loss.item()]
-                if (losses[3] > 10) and (step > 5):
-                    IT_hat_np = torch.cat(image_collector, 1).cpu().detach().numpy()
-                    I_t_np = I_t.cpu().detach().numpy()
-                    I0_np = I0.cpu().numpy()
-                    I1_np = I1.cpu().numpy()
-                    IT_np = IT.cpu().numpy()
-                    g0_np = g0.cpu().detach().numpy()
-                    g1_np = g1.cpu().detach().numpy()
-                    print("g0_np", g0_np.shape)
-
+                losses = [loss_reconstruction.item(), loss_warp.item(), loss.item()]
+                if losses[2] > 10:
                     print("Losses", losses)
                     print("I0", np.histogram(I0.cpu().flatten()))
                     print("I1", np.histogram(I1.cpu().flatten()))
                     print("IT", np.histogram(IT.cpu().flatten()))
-                    print("I_t-Pred", np.histogram(I_t_np.flatten()))
-
-                    import matplotlib.pyplot as plt
-                    fig, axs = plt.subplots(3,3)
-                    axs = np.ravel(axs)
-                    #I0 (N,C,H,W)
-                    print(I0_np[0].shape)
-                    axs[0].imshow(np.squeeze(np.transpose(I0_np[0], (1,2,0))))
-                    axs[1].imshow(np.squeeze(np.transpose(I1_np[0], (1,2,0))))
-                    axs[2].imshow(np.squeeze(np.transpose((I1_np[0]-I0_np[0]), (1,2,0))))
-                    axs[3].imshow(g0_np[0,0])
-                    axs[4].imshow(g0_np[0,1])
-                    axs[5].imshow(g1_np[0,0])
-                    axs[6].imshow(g1_np[0,1])
-                    print(I_t_np[0].shape)
-                    axs[7].imshow(np.squeeze(np.transpose(I_t_np[0], (1,2,0))))
-                    #axs[8].imshow(np.abs(I_t_np[0]).max(axis=0) > 10)
-                    axs[8].imshow(np.squeeze(np.transpose(I_t_np[0] - IT_np[0,i-1], (1,2,0))))
-                    plt.show()
+                    print("IT-Pred", np.histogram(IT_hat.cpu().detach().numpy().flatten()))
                     return
 
-                out = "(Epoch: %i, Iteration %i, Iteration time: %1.4f) Reconstruction Loss=%2.6f\tWarping Loss=%2.6f"\
-                      "\tSmooth Loss=%2.6f\tTotal Loss=%2.6f" % (epoch, step, time.time()-t0, losses[0], losses[1],
-                                              losses[2], losses[3])
+                out = "(Epoch: %i, Iteration %i, Iteration time: %1.2f) Reconstruction Loss=%2.6f\tWarping Loss=%2.6f"\
+                      "\tTotal Loss=%2.6f" % (epoch, step, time.time()-t0, losses[0], losses[1], losses[2])
                 print(out)
                 if np.isnan(losses[0]):
                     for k, l in enumerate([l.item() for l in loss_vector]):
@@ -189,4 +161,4 @@ def train_net(n_channels=3,
             step += 1
 
 if __name__ == "__main__":
-    train_net(model_path='saved-models/5min-samples/', lr=1e-3, epochs=5, batch_size=1, n_channels=1)
+    train_net(model_path='saved-models/5min-samples-mv/', lr=1e-4, epochs=2, batch_size=8)

@@ -10,10 +10,11 @@ import torchvision
 from flownet import FlowWarper
 import goes16
 
-flow_net_model_dir = './saved-models/model1/flownet.torch'
-interp_net_dir = './saved-models/model1/interpnet.torch'
-prediction_dir = './saved-models/model1/images/'
-lowres_dir = './saved-models/model1/lr-images/'
+model_dir = './saved-models/lr1e-3-randshift'
+flow_net_model_dir = model_dir + '/flownet.torch'
+interp_net_dir = model_dir + '/interpnet.torch'
+prediction_dir = model_dir + '/images/'
+lowres_dir = model_dir + '/lr-images/'
 
 flow_net = torch.load(flow_net_model_dir).cuda()
 flow_net.eval()

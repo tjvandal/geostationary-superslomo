@@ -177,6 +177,9 @@ class GOESDatasetS3(Dataset):
         self.s3_base_path = s3_base_path
         self.buffer_size = buffer_size
         self.s3_keys = list(self.bucket.objects.filter(Prefix=self.s3_base_path))
+        #self.s3_keys = self.s3_keys[:100]
+        #print(self.s3_keys)
+        print("Number of training sample", len(self.s3_keys))
         self.N_keys = len(self.s3_keys)
         self.n_upsample = n_upsample
         self.n_overlap = n_overlap
@@ -249,13 +252,13 @@ class GOESDatasetS3(Dataset):
         return self.N_keys
 
     def __getitem__(self, idx):
-        key = self.s3_keys[idx]
-        if key is None:
-            return self.__getitem__(idx + 1 % self.N_keys)
+        obj = self.s3_keys[idx]
+        key = obj.key
+        #if key is None:
+        #    return self.__getitem__((idx + 1) % self.N_keys)
 
-        key = key.key
-        s3 = boto3.resource('s3')
-        obj = s3.Object(self.bucket_name, key)
+        #s3 = boto3.resource('s3')
+        #obj = s3.Object(self.bucket_name, key)
 
         #try:
         bio = io.BytesIO(obj.get()['Body'].read())
@@ -267,24 +270,16 @@ class GOESDatasetS3(Dataset):
         try:
             block = np.load(bio)
         except Exception as err:
-            print(err)
-            print(key)
             raise TypeError
         block = self.transform(block)
 
         I0 = torch.from_numpy(block[0])
         I1 = torch.from_numpy(block[-1])
         IT = torch.from_numpy(block[1:-1])
-        try:
-            assert IT.shape[1] == 3
-        except AssertionError:
-            obj.delete()
-            self.s3_keys[idx] = None
-            return self.__getitem__(idx + 1 % self.N_keys)
 
         return I0, I1, IT
 
 if __name__ == "__main__":
-    goespytorch = GOESDatasetS3(s3_base_path='slomo-5min')
-    goespytorch.write_example_blocks_to_s3(2017, 74, channels=range(1,17))
+    goespytorch = GOESDatasetS3(s3_base_path='slomo-rgb-5min/')
+    #goespytorch.write_example_blocks_to_s3(2017, 74, channels=range(1,17))
     print goespytorch.__getitem__(0)[2].shape
