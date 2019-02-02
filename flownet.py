@@ -21,8 +21,10 @@ class FlowWarper(nn.Module):
         # end
 
         self.tensorGrid = self.tensorGrid.cuda()
-        tensorFlow = torch.cat([ tensorFlow[:, 0:1, :, :] / ((tensorInput.size(3) - 1.0) / 2.0), tensorFlow[:, 1:2, :, :] / ((tensorInput.size(2) - 1.0) / 2.0) ], 1)
-        out = torch.nn.functional.grid_sample(input=tensorInput, grid=(self.tensorGrid + tensorFlow).permute(0, 2, 3, 1), mode='bilinear', padding_mode='border')
+        tensorFlow = torch.cat([ tensorFlow[:, 0:1, :, :] / ((tensorInput.size(3) - 1.0) / 2.0),
+                                 tensorFlow[:, 1:2, :, :] / ((tensorInput.size(2) - 1.0) / 2.0)], 1)
+        out = torch.nn.functional.grid_sample(input=tensorInput, grid=(self.tensorGrid + tensorFlow).permute(0, 2, 3, 1),
+                                              mode='bilinear', padding_mode='border')
         return out
     # end
 
@@ -77,7 +79,8 @@ class SloMoInterpNet(nn.Module):
         g_1_ft_1 = self.warper(I1, f_t1 + delta_f_t1)
         I_t = (1-t) * V_t0 * g_0_ft_0 + t * V_t1 * g_1_ft_1
         I_t /= normalization
-        return I_t, g0, g1
+        #return I_t, V_t0, V_t1, delta_f_t0, delta_f_t1
+        return I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1
 
 class SloMoFlowNetMV(nn.Module):
     '''
@@ -101,7 +104,7 @@ class SloMoInterpNetMV(nn.Module):
         #self.device = device
         self.warper = FlowWarper()
         #self.unet = unet.UNet(n_channels*4 + 4, 6)
-        self.unet = unet.UNet(n_channels*4 + n_channels*4, 6*n_channels)
+        self.unet = unet.UNet(n_channels*4 + n_channels*4, 2+4*n_channels)
         self.n_channels = n_channels
 
     def forward(self, I0, I1, F0, F1, t):
@@ -136,27 +139,27 @@ class SloMoInterpNetMV(nn.Module):
         # delta_f_t0, delta_f_t1: 2 * n_channels each
         # I0, I1: 3 channels each
         interp = self.unet(x_flow)
-        V_t0 = interp[:, :n_channels] #torch.unsqueeze(interp[:,0], 1)
-        V_t1 = interp[:, n_channels:2*n_channels] #torch.unsqueeze(interp[:,1], 1)
-        delta_f_t0 = interp[:, 2*n_channels:4*n_channels] # interp[:, 2:4]
-        delta_f_t1 = interp[:, 4*n_channels:6*n_channels]
+        V_t0 = torch.unsqueeze(interp[:,0], 1)
+        V_t1 = torch.unsqueeze(interp[:,1], 1)
+
+        normalization = (1-t) * V_t0+ t * V_t1
+
+        delta_f_t0 = interp[:, 2:2*n_channels+2] # interp[:, 2:4]
+        delta_f_t1 = interp[:, 2*n_channels+2:4*n_channels+2]
 
         I_t = []
         for c in range(self.n_channels):
-            V_t0_c = torch.unsqueeze(V_t0[:,c], 1)
-            V_t1_c = torch.unsqueeze(V_t1[:,c], 1)
 
             delta_f_t0_c = delta_f_t0[:, c*2:(c+1)*2]
             delta_f_t1_c = delta_f_t1[:, c*2:(c+1)*2]
-            normalization_c = (1-t) * V_t0_c + t * V_t1_c
 
             g_0_ft_0_c = self.warper(I0[:,c].unsqueeze(1), f_t0[c] + delta_f_t0_c)
             g_1_ft_1_c = self.warper(I1[:,c].unsqueeze(1), f_t1[c] + delta_f_t1_c)
-            I_t_c = (1-t) * V_t0_c * g_0_ft_0_c + t * V_t1_c * g_1_ft_1_c
-            I_t_c /= normalization_c
+            I_t_c = (1-t) * V_t0* g_0_ft_0_c + t * V_t1* g_1_ft_1_c
+            I_t_c /= normalization
             I_t.append(I_t_c)
 
         I_t = torch.cat(I_t, 1)
         g0 = torch.cat(g0, 1)
         g1 = torch.cat(g1, 1)
-        return I_t, g0, g1
+        return I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1

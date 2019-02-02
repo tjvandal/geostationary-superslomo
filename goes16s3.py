@@ -19,7 +19,7 @@ from torch.utils.data import Dataset, DataLoader
 import utils
 
 # temporary directory is used to save file from s3 and read via xarray
-TEMPORARY_DIR = '/tmp'
+TEMPORARY_DIR = '/raid/tj/GOES/ABI-L1b-RadM/'
 
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
@@ -69,29 +69,45 @@ class NOAAGOESS3(object):
         return pd.DataFrame(data)
 
     def _open_file(self, f, normalize=True):
-        ds = xr.open_dataset(f)
+        try:
+            ds = xr.open_dataset(f)
+        except IOError:
+            os.remove(f)
+            return None
+
         if normalize:
             mn = ds['min_radiance_value_of_valid_pixels'].values
             mx = ds['max_radiance_value_of_valid_pixels'].values
             ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
         return ds
 
-    def read_nc_from_s3(self, keyname, normalize=True):
-        if not os.path.exists(TEMPORARY_DIR):
-            os.makedirs(TEMPORARY_DIR)
+    def download_from_s3(self, keyname, directory):
+        if not os.path.exists(directory):
+            os.makedirs(directory)
         k = boto.s3.key.Key(self.goes_bucket)
         k.key = keyname
-        tmpf = os.path.join(TEMPORARY_DIR, os.path.basename(keyname))
-        if k.exists():
-            content = k.get_contents_to_filename(tmpf)
-            ds = self._open_file(tmpf, normalize=normalize)
+        data_file = os.path.join(directory, os.path.basename(keyname))
+        if os.path.exists(data_file):
+            pass
+        elif k.exists():
+            k.get_contents_to_filename(data_file)
+        else:
+            data_file = None
+        return data_file
+
+    def read_nc_from_s3(self, keyname, normalize=True):
+        data_file = self.download_from_s3(keyname, TEMPORARY_DIR)
+        if data_file is not None:
+            ds = self._open_file(data_file, normalize=normalize)
+            if ds is None:
+                self.read_nc_from_s3(keyname, normalize=normalize)
         else:
             ds = None
-            tmpf = None
+            data_file = None
+        return ds, data_file
 
-        return ds, tmpf
-
-    def read_day(self, year, day, hours=range(12,25)):
+    def read_day(self, year, day, hours=range(12,25),
+                 store_files=True):
         '''
         Reads and joins product data for entire day in temporal order.
         args:
@@ -143,30 +159,147 @@ class NOAAGOESS3(object):
                                   'mds[-1]', mds[-1], 'mds[0]', mds[0])
                             raise
                     if f is None: # missing a minute in this hour, just skip it for now
+                        print("f is none")
                         break
 
-                    #print("Memory", psutil.virtual_memory()[2])
                     mds = xr.concat(mds, dim='band')
                     mds['t'] = ds['t']
                     hourly_das.append(mds)
+                    # in this case, a snapshot is being captured every 30 seconds, ignore the hour
+                    if np.unique(mds.band.values).size < mds.band.shape[0]:
+                        print("This hour has more than 1 snapshot per minute, skip it.")
+                        hourly_das = []
+                        break
 
-                    #print("Datasets this hour", len(hourly_das), "day", day, "hour", hname, "Memory Percent",
-                    #psutil.virtual_memory()[2])
-                if len(hourly_das) == 0: break
+                if len(hourly_das) == 0: continue
 
                 x0 = hourly_das[0].x.values
                 xn = hourly_das[-1].x.values
                 y0 = hourly_das[0].y.values
                 yn = hourly_das[-1].y.values
 
-                if not np.all(x0 == xn): break
-                if not np.all(y0 == yn): break
-                
+                if not np.all(x0 == xn): print("x Indicies do not match"); continue
+                if not np.all(y0 == yn): print("y Indicies do not match"); continue
+
                 hourly_das = xr.concat(hourly_das, dim='t')
                 yield hourly_das
 
-                [os.remove(f) for f in hourly_files]
+                if not store_files:
+                    [os.remove(f) for f in hourly_files]
 
+class GOESDataset(Dataset):
+    def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
+                 n_upsample=5, n_overlap=3):
+        self.example_directory = example_directory
+        if not os.path.exists(self.example_directory):
+            os.makedirs(self.example_directory)
+        self._example_files()
+        self.n_upsample = n_upsample
+        self.n_overlap = n_overlap
+
+    def _example_files(self):
+        self.example_files = [os.path.join(self.example_directory, f) for f in
+                              os.listdir(self.example_directory) if 'npy' == f[-3:]]
+        self.example_files = self.example_files[:1000]
+        self.N_files = len(self.example_files)
+
+    def _check_directory(self, year, day):
+        yeardayfiles = [f for f in self.example_files if '%4i_%03i' % (year, day) in f]
+        if len(list(yeardayfiles)) > 0:
+            return True
+        return False
+
+    def write_example_blocks(self, year, day, channels=range(1,17), force=False):
+        counter = 0
+        goes = NOAAGOESS3(channels=channels)
+        if (self._check_directory(year, day)) and (not force):  return
+
+        for data in goes.read_day(year, day):
+            blocked_data = utils.blocks(data, width=360)
+
+            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
+            # overlap by 5 minutes
+
+            n = self.n_upsample + self.n_overlap + 1
+            for blocks in blocked_data:
+                idxs = np.arange(0, blocks.shape[0], self.n_upsample)
+                for i in idxs:
+                    if i + n > blocks.shape[0]:
+                        i = blocks.shape[0] - n
+
+                    b = blocks[i:i+n]
+                    if np.all(np.isfinite(b)):
+                        fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                        save_file = os.path.join(self.example_directory, fname)
+                        print("saved file: %s" % save_file)
+                        np.save(save_file, b)
+                        #self.bucket.upload_file(save_file, '%s/%s' % (self.s3_base_path, fname))
+                        #os.remove(save_file)
+                        counter += 1
+                    else:
+                        print("Is not finite")
+        self._example_files()
+
+    def transform(self, block):
+        n_select = self.n_upsample + 1
+        # randomly shift temporally
+        i = np.random.choice(range(0,self.n_overlap))
+        block = block[i:n_select+i]
+
+        # randomly shift vertically 
+        i = np.random.choice(range(0,8))
+        block = block[:,:,i:i+352]
+
+        # randomly shift horizontally
+        i = np.random.choice(range(0,8))
+        block = block[:,:,:,i:i+352]
+
+        # randomly flip up-down
+        #if np.random.uniform() > 0.5:
+            #block = block[:,::-1]
+            #block = np.flip(block, axis=1).copy()
+
+        # randomly flip right-left 
+        #if np.random.uniform() > 0.5:
+        #    block = block[:,:,::-1]
+        #    block = np.flip(block, axis=2).copy()
+
+        return block
+
+    def __len__(self):
+        return self.N_files
+
+    def __getitem__(self, idx):
+        f = self.example_files[idx]
+        #obj = self.s3_keys[idx]
+        #key = obj.key
+        #if key is None:
+        #    return self.__getitem__((idx + 1) % self.N_keys)
+
+        #s3 = boto3.resource('s3')
+        #obj = s3.Object(self.bucket_name, key)
+
+        #try:
+        #bio = io.BytesIO(obj.get()['Body'].read())
+        #except botocore.Exceptions.ClientError as ex:
+        #    if obj['Error']['Code'] == 'NoSuchKey':
+        #        return self.__getitem__(idx + 1 % self.N_keys)
+        #    else:
+        #        raise ex
+        try:
+            block = np.load(f)
+        except Exception as err:
+            raise TypeError
+        block = self.transform(block)
+
+        I0 = torch.from_numpy(block[0])
+        I1 = torch.from_numpy(block[-1])
+        IT = torch.from_numpy(block[1:-1])
+
+        return I0, I1, IT
+
+# DO NOT USE
+# this class needs to be updated and dependent on GOESDataset
 class GOESDatasetS3(Dataset):
     def __init__(self, s3_bucket_name="nex-goes-slowmo",
                  s3_base_path="train/", buffer_size=60,
@@ -222,32 +355,6 @@ class GOESDatasetS3(Dataset):
                         os.remove(save_file)
                         counter += 1
 
-    def transform(self, block):
-        n_select = self.n_upsample + 1
-        # randomly shift temporally
-        i = np.random.choice(range(0,self.n_overlap))
-        block = block[i:n_select+i]
-
-        # randomly shift vertically 
-        i = np.random.choice(range(0,8))
-        block = block[:,:,i:i+352]
-
-        # randomly shift horizontally
-        i = np.random.choice(range(0,8))
-        block = block[:,:,:,i:i+352]
-
-        # randomly flip up-down
-        #if np.random.uniform() > 0.5:
-            #block = block[:,::-1]
-            #block = np.flip(block, axis=1).copy()
-
-        # randomly flip right-left 
-        #if np.random.uniform() > 0.5:
-        #    block = block[:,:,::-1]
-        #    block = np.flip(block, axis=2).copy()
-
-        return block
-
     def __len__(self):
         return self.N_keys
 
@@ -279,7 +386,29 @@ class GOESDatasetS3(Dataset):
 
         return I0, I1, IT
 
+def training_set():
+    for n_channels in [1,3,5,8]:
+        goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Train/' % n_channels)
+        year = 2017
+        for day in [75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350]:
+        #for day in [75, 100,]:
+            goespytorch.write_example_blocks(year, day, channels=range(1,n_channels+1), force=False)
+
+def test_set():
+    for n_channels in [1,3,5,8]:
+        goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Test/' % n_channels)
+        year = 2018
+        # March 3 Noreaster
+        noreaster_day = datetime(year, 3, 3).timetuple().tm_yday
+        # July 18 Montana wild fire
+        wildfire_day = datetime(year, 7, 18).timetuple().tm_yday
+        # October 10 Hurricane Michael 
+        hurricane_day = datetime(year, 10, 10).timetuple().tm_yday
+        for day in [noreaster_day, wildfire_day, huricane_day]:
+            goespytorch.write_example_blocks(year, day, channels=range(1,n_channels+1), force=False)
+
 if __name__ == "__main__":
-    goespytorch = GOESDatasetS3(s3_base_path='slomo-rgb-5min/')
-    #goespytorch.write_example_blocks_to_s3(2017, 74, channels=range(1,17))
-    print goespytorch.__getitem__(0)[2].shape
+    #noaagoes = NOAAGOESS3(channels=range(1,4))
+    #noaagoes.read_day(2017, 74).next()
+    training_set()
+    #test_set()
