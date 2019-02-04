@@ -387,25 +387,28 @@ class GOESDatasetS3(Dataset):
         return I0, I1, IT
 
 def training_set():
-    for n_channels in [1,3,5,8]:
+    for n_channels in [16,]:
         goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Train/' % n_channels)
         year = 2017
-        for day in [75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350]:
+        for day in range(75,365):
+        #[75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350]:
         #for day in [75, 100,]:
             goespytorch.write_example_blocks(year, day, channels=range(1,n_channels+1), force=False)
 
 def test_set():
-    for n_channels in [1,3,5,8]:
-        goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Test/' % n_channels)
+    for n_channels in [8,]:
+        data = NOAAGOESS3(channels=range(1,n_channels+1))
         year = 2018
         # March 3 Noreaster
-        noreaster_day = datetime(year, 3, 3).timetuple().tm_yday
+        noreaster_day = datetime.datetime(year, 3, 3).timetuple().tm_yday
         # July 18 Montana wild fire
-        wildfire_day = datetime(year, 7, 18).timetuple().tm_yday
+        wildfire_day = datetime.datetime(year, 7, 18).timetuple().tm_yday
         # October 10 Hurricane Michael 
-        hurricane_day = datetime(year, 10, 10).timetuple().tm_yday
-        for day in [noreaster_day, wildfire_day, huricane_day]:
-            goespytorch.write_example_blocks(year, day, channels=range(1,n_channels+1), force=False)
+        hurricane_day = datetime.datetime(year, 10, 10).timetuple().tm_yday
+        for day in [noreaster_day, wildfire_day, hurricane_day]:
+            print("day", day)
+            for dataarray in data.read_day(year, day):
+                pass
 
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))

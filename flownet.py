@@ -69,8 +69,8 @@ class SloMoInterpNet(nn.Module):
         # delta_f_t0, delta_f_t1: 2 channels each
         # I0, I1: 3 channels each
         interp = self.unet(x_flow)
-        V_t0 = torch.unsqueeze(interp[:,0], 1)
-        V_t1 = torch.unsqueeze(interp[:,1], 1)
+        V_t0 = torch.sigmoid(torch.unsqueeze(interp[:,0], 1)) + 1e-6
+        V_t1 = torch.sigmoid(torch.unsqueeze(interp[:,1], 1)) + 1e-6
         delta_f_t0 = interp[:, 2:4]
         delta_f_t1 = interp[:, 4:6]
 
@@ -139,10 +139,10 @@ class SloMoInterpNetMV(nn.Module):
         # delta_f_t0, delta_f_t1: 2 * n_channels each
         # I0, I1: 3 channels each
         interp = self.unet(x_flow)
-        V_t0 = torch.unsqueeze(interp[:,0], 1)
-        V_t1 = torch.unsqueeze(interp[:,1], 1)
+        V_t0 = torch.sigmoid(torch.unsqueeze(interp[:,0], 1)) + 1e-6
+        V_t1 = torch.sigmoid(torch.unsqueeze(interp[:,1], 1)) + 1e-6
 
-        normalization = (1-t) * V_t0+ t * V_t1
+        normalization = (1-t) * V_t0 + t * V_t1
 
         delta_f_t0 = interp[:, 2:2*n_channels+2] # interp[:, 2:4]
         delta_f_t1 = interp[:, 2*n_channels+2:4*n_channels+2]

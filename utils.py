@@ -99,7 +99,6 @@ def blocks(data, width=352):
         for windex in ws:
             if windex+width > w:
                 windex = w - width
-
-            blocks.append(data.isel(y=range(hindex, hindex+width),
-                                    x=range(windex, windex+width)))
+            blocks.append(data.sel(y=data.y.values[hindex:hindex+width],
+                                    x=data.x.values[windex:windex+width]))
     return blocks
