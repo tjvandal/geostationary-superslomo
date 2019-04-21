@@ -12,16 +12,12 @@ import torchvision
 import unet
 import goes16s3
 
-# from flownet import FlowWarper, SloMoFlowNetMV, SloMoInterpNetMV
-import flownet as fl
 import eval_utils
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--gpu", default="0", type=str)
-parser.add_argument("--multivariate", dest='multivariate', action='store_true')
 parser.add_argument("--channel", default=None, type=int)
 parser.add_argument("--epochs", default=20, type=int)
-parser.set_defaults(multivariate=False)
 args = parser.parse_args()
 
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -43,22 +39,6 @@ def train_net(n_channels=3,
 
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    if multivariate:
-        flownet_filename = os.path.join(model_path, 'checkpoint.flownet.mv.pth.tar')
-        interpnet_filename= os.path.join(model_path, 'checkpoint.interpnet.mv.pth.tar')
-        flownet = fl.SloMoFlowNetMV(n_channels)#.cuda()
-        interpnet = fl.SloMoInterpNetMV(n_channels)#.cuda()
-    else:
-        flownet_filename = os.path.join(model_path, 'checkpoint.flownet.pth.tar')
-        interpnet_filename= os.path.join(model_path, 'checkpoint.interpnet.pth.tar')
-        flownet = fl.SloMoFlowNet(n_channels)#.cuda()
-        interpnet = fl.SloMoInterpNet(n_channels)#.cuda()
-
-    warper = fl.FlowWarper()#.cuda()
-
-    flownet = flownet.to(device)
-    interpnet = interpnet.to(device)
-    warper = warper.to(device)
 
     if not os.path.exists(model_path):
         os.makedirs(model_path)
@@ -74,29 +54,7 @@ def train_net(n_channels=3,
                                  lr=lr)
     recon_l2_loss = nn.MSELoss()
 
-
-    def load_checkpoint(flownet, interpnet, optimizer, filename):
-        start_epoch = 0
-        if os.path.isfile(filename):
-            print("loading checkpoint %s" % filename)
-            checkpoint = torch.load(filename)
-            start_epoch = checkpoint['epoch']
-            flownet.load_state_dict(checkpoint['flownet_state_dict'])
-            interpnet.load_state_dict(checkpoint['interpnet_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                    .format(filename, start_epoch))
-        else:
-            print("=> no checkpoint found at '{}'".format(filename))
-        return flownet, interpnet, optimizer, start_epoch
-
-    flownet.train()
-    interpnet.train()
-    flownet, interpnet, optimizer, start_epoch = load_checkpoint(flownet, interpnet, optimizer,
-                                                      filename=flownet_filename)
-
     step = 0
-    statsfile = open(os.path.join(model_path, 'loss.txt'), 'w')
     print("Begin Training at epoch {}".format(start_epoch))
     for epoch in range(start_epoch, EPOCHS):
         for I0, I1, IT in training_generator:

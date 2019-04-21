@@ -19,7 +19,9 @@ from torch.utils.data import Dataset, DataLoader
 import utils
 
 # temporary directory is used to save file from s3 and read via xarray
-TEMPORARY_DIR = '/raid/tj/GOES/ABI-L1b-RadM/'
+#TEMPORARY_DIR = '/raid/tj/GOES/S3'
+TEMPORARY_DIR = '/mnt/nexai-goes/GOES/S3'
+EXAMPLE_DIR = '/mnt/nexai-goes/GOES/'
 
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
@@ -29,6 +31,7 @@ class NOAAGOESS3(object):
         self.channels = channels
         self.conn = boto.connect_s3(host='s3.amazonaws.com')
         self.goes_bucket = self.conn.get_bucket(self.bucket_name)
+        self.save_directory = os.path.join(TEMPORARY_DIR, product)
 
     def year_day_pairs(self):
         days = []
@@ -90,13 +93,14 @@ class NOAAGOESS3(object):
         if os.path.exists(data_file):
             pass
         elif k.exists():
+            print("writing file to {}".format(data_file))
             k.get_contents_to_filename(data_file)
         else:
             data_file = None
         return data_file
 
     def read_nc_from_s3(self, keyname, normalize=True):
-        data_file = self.download_from_s3(keyname, TEMPORARY_DIR)
+        data_file = self.download_from_s3(keyname, self.save_directory)
         if data_file is not None:
             ds = self._open_file(data_file, normalize=normalize)
             if ds is None:
@@ -135,7 +139,7 @@ class NOAAGOESS3(object):
                     for i in mgroup.index:
                         ds, f = self.read_nc_from_s3(mgroup.loc[i].keyname)
                         hourly_files.append(f)
-                        if f is None:
+                        if (f is None) or (ds is None):
                             break
 
                         if mgroup.loc[i].channel in [1,3,5]: #(1 km)
@@ -200,7 +204,105 @@ class GOESDataset(Dataset):
     def _example_files(self):
         self.example_files = [os.path.join(self.example_directory, f) for f in
                               os.listdir(self.example_directory) if 'npy' == f[-3:]]
-        self.example_files = self.example_files[:1000]
+        self.N_files = len(self.example_files)
+
+    def _check_directory(self, year, day):
+        yeardayfiles = [f for f in self.example_files if '%4i_%03i' % (year, day) in f]
+        if len(list(yeardayfiles)) > 0:
+            return True
+        return False
+
+    def write_example_blocks(self, year, day, channels=range(1,17), force=False):
+        counter = 0
+        goes = NOAAGOESS3(channels=channels)
+        if (self._check_directory(year, day)) and (not force):  return
+
+        for data in goes.read_day(year, day):
+            blocked_data = utils.blocks(data, width=360)
+
+            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
+            # overlap by 5 minutes
+
+            n = self.n_upsample + self.n_overlap + 1
+            for blocks in blocked_data:
+                idxs = np.arange(0, blocks.shape[0], self.n_upsample)
+                for i in idxs:
+                    if i + n > blocks.shape[0]:
+                        i = blocks.shape[0] - n
+
+                    b = blocks[i:i+n]
+                    if np.all(np.isfinite(b)) and (b.shape[0] == n):
+                        fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                        save_file = os.path.join(self.example_directory, fname)
+                        print("saved file: %s" % save_file)
+                        np.save(save_file, b)
+                        #self.bucket.upload_file(save_file, '%s/%s' % (self.s3_base_path, fname))
+                        #os.remove(save_file)
+                        counter += 1
+                    else:
+                        print("Is not finite")
+        self._example_files()
+
+    def transform(self, block):
+        n_select = self.n_upsample + 1
+        # randomly shift temporally
+        i = np.random.choice(range(0,self.n_overlap))
+        block = block[i:n_select+i]
+
+        # randomly shift vertically 
+        i = np.random.choice(range(0,8))
+        block = block[:,:,i:i+352]
+
+        # randomly shift horizontally
+        i = np.random.choice(range(0,8))
+        block = block[:,:,:,i:i+352]
+
+        # randomly flip up-down
+        #if np.random.uniform() > 0.5:
+            #block = block[:,::-1]
+            #block = np.flip(block, axis=1).copy()
+
+        # randomly flip right-left 
+        #if np.random.uniform() > 0.5:
+        #    block = block[:,:,::-1]
+        #    block = np.flip(block, axis=2).copy()
+
+        return block
+
+    def __len__(self):
+        return self.N_files
+
+    def __getitem__(self, idx):
+        f = self.example_files[idx]
+        try:
+            block = np.load(f)
+            block = self.transform(block)
+            I0 = torch.from_numpy(block[0])
+            I1 = torch.from_numpy(block[-1])
+            IT = torch.from_numpy(block[1:-1])
+        except Exception as err:
+            os.remove(f)
+            del self.example_files[idx]
+            self.N_files -= 1
+            raise TypeError("Cannot load file: {}".formate(f))
+
+        return I0, I1, IT
+
+
+class Nowcast(Dataset):
+    def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
+                 n_overlap=3):
+        self.example_directory = example_directory
+        if not os.path.exists(self.example_directory):
+            os.makedirs(self.example_directory)
+
+        self._example_files()
+        self.n_upsample = n_upsample
+        self.n_overlap = n_overlap
+
+    def _example_files(self):
+        self.example_files = [os.path.join(self.example_directory, f) for f in
+                              os.listdir(self.example_directory) if 'npy' == f[-3:]]
         self.N_files = len(self.example_files)
 
     def _check_directory(self, year, day):
@@ -233,11 +335,10 @@ class GOESDataset(Dataset):
                         save_file = os.path.join(self.example_directory, fname)
                         print("saved file: %s" % save_file)
                         np.save(save_file, b)
-                        #self.bucket.upload_file(save_file, '%s/%s' % (self.s3_base_path, fname))
-                        #os.remove(save_file)
                         counter += 1
                     else:
                         print("Is not finite")
+
         self._example_files()
 
     def transform(self, block):
@@ -297,6 +398,8 @@ class GOESDataset(Dataset):
         IT = torch.from_numpy(block[1:-1])
 
         return I0, I1, IT
+
+
 
 # DO NOT USE
 # this class needs to be updated and dependent on GOESDataset
@@ -386,14 +489,27 @@ class GOESDatasetS3(Dataset):
 
         return I0, I1, IT
 
-def training_set():
+
+def download_data():
     for n_channels in [16,]:
         goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Train/' % n_channels)
-        year = 2017
-        for day in range(75,365):
-        #[75, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350]:
-        #for day in [75, 100,]:
-            goespytorch.write_example_blocks(year, day, channels=range(1,n_channels+1), force=False)
+        noaa = NOAAGOESS3(channels=range(1,n_channels+1))
+        for year in [2018]:
+            for day in np.arange(1,365,25):
+                iterator = noaa.read_day(year, day)
+                for _ in iterator:
+                    pass
+
+def training_set():
+    for n_channels in [1,3,5,8]:
+        #goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Train/' % n_channels)
+        example_directory = os.path.join(EXAMPLE_DIR,'5Min-%iChannels-Train' % n_channels)
+        goespytorch = GOESDataset(example_directory=example_directory)
+        for year in [2018]:
+            for day in np.arange(1,365,25):
+                goespytorch.write_example_blocks(year, day,
+                                     channels=range(1,n_channels+1),
+                                     force=False)
 
 def test_set():
     for n_channels in [8,]:
@@ -410,8 +526,19 @@ def test_set():
             for dataarray in data.read_day(year, day):
                 pass
 
+def download_conus_data():
+    for n_channels in [3,]:
+        noaa = NOAAGOESS3(product='ABI-L1b-RadC', channels=range(1,n_channels+1))
+        for year in [2018]:
+            for day in [198,199,200]:
+                iterator = noaa.read_day(year, day)
+                for _ in iterator:
+                    pass
+
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
     #noaagoes.read_day(2017, 74).next()
+    #download_data()
     training_set()
     #test_set()
+   # download_conus_data()

@@ -5,12 +5,13 @@ import matplotlib.pyplot as plt
 import torch
 import torchvision
 from flownet import FlowWarper
-import goes16
+import goes16s3
 
-flow_net_model_dir = './saved-models/model1/flownet.torch'
-interp_net_dir = './saved-models/model1/interpnet.torch'
-prediction_dir = './saved-models/model1/images-minute/'
-lowres_dir = './saved-models/model1/lr-images-minute/'
+model = '5Min-3Channels'
+flow_net_model_dir = './saved-models/%s/flownet.torch' % model
+interp_net_dir = './saved-models/%s/interpnet.torch' % model
+prediction_dir = './saved-models/%s/images-minute/' % model
+lowres_dir = './saved-models/%s/lr-images-minute/' % model
 
 flow_net = torch.load(flow_net_model_dir)
 flow_net.eval()
@@ -23,7 +24,7 @@ if not os.path.exists(prediction_dir):
 if not os.path.exists(lowres_dir):
     os.makedirs(lowres_dir)
 
-
+sys.exit()
 dir_data = './data/'
 dataset = goes16.GOESDataset(noaagoes_data_dir=dir_data)
 

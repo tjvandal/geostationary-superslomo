@@ -84,7 +84,7 @@ def interp_da2d(da, scale, fillna=False, how=cv2.INTER_NEAREST):
                  dims=da.dims)
 
 def blocks(data, width=352):
-    n = data.t.shape[0]
+    #n = data.t.shape[0]
     w = data.x.shape[0]
     h = data.y.shape[0]
     d = data.band.shape[0]
