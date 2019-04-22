@@ -1,9 +1,12 @@
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.abspath(os.getcwd())))
+
 import xarray as xr
 import utils
 import torch
 import torchvision
-import flownet as fl
+from slomo import flownet as fl
 import numpy as np
 
 

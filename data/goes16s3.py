@@ -1,4 +1,8 @@
 import os, sys
+
+sys.path.append(os.path.dirname(os.path.abspath(os.getcwd())))
+from tools import utils
+
 import datetime
 import io
 import time
@@ -16,7 +20,8 @@ import psutil
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-import utils
+import tools
+
 
 # temporary directory is used to save file from s3 and read via xarray
 #TEMPORARY_DIR = '/raid/tj/GOES/S3'
@@ -25,15 +30,22 @@ EXAMPLE_DIR = '/mnt/nexai-goes/GOES/'
 
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
-    def __init__(self, product='ABI-L1b-RadM', channels=range(1,17)):
+    def __init__(self, product='ABI-L1b-RadM', channels=range(1,17),
+                       save_directory='/mnt/nexai-goes/GOES/S3'):
         self.bucket_name = 'noaa-goes16'
         self.product = product
         self.channels = channels
         self.conn = boto.connect_s3(host='s3.amazonaws.com')
         self.goes_bucket = self.conn.get_bucket(self.bucket_name)
-        self.save_directory = os.path.join(TEMPORARY_DIR, product)
-
+        self.save_directory = os.path.join(save_directory, product)    
+        
     def year_day_pairs(self):
+        '''
+        Gets all year and day pairs in S3 for the given product
+        
+        Return:
+            list of pairs
+        '''
         days = []
         for key_year in self.goes_bucket.list(self.product+"/", "/"):
             y = int(key_year.name.split('/')[1])
@@ -43,7 +55,7 @@ class NOAAGOESS3(object):
                 d = int(key_day.name.split('/')[2])
                 days += [(y, d)]
         return days
-
+    
     def day_keys(self, year, day, hours=range(12,24)):
         keybase = '%(product)s/%(year)04i/%(day)03i/' % dict(product=self.product,
                                                            year=year, day=day)
@@ -61,6 +73,7 @@ class NOAAGOESS3(object):
                 c = int(c[3:])
                 if c not in self.channels:
                     continue
+                    
                 minute = int(t[10:12])
                 second = int(t[12:15])
                 data.append(dict(channel=c, year=year, day=day, hour=hour,
@@ -109,7 +122,16 @@ class NOAAGOESS3(object):
             ds = None
             data_file = None
         return ds, data_file
-
+    
+    def download_day(self, year, day, hours=range(12, 25)):
+        '''
+        Downloads all files for a given year and dayofyear for the defined channels
+        '''
+        keys_df = self.day_keys(year, day, hours=hours)
+        for i, row in keys_df.iterrows():
+            data_file = self.download_from_s3(row.keyname, self.save_directory)
+            
+    #TODO -- This function is terrible, simplify by reading local files only
     def read_day(self, year, day, hours=range(12,25),
                  store_files=True):
         '''
@@ -141,18 +163,8 @@ class NOAAGOESS3(object):
                         hourly_files.append(f)
                         if (f is None) or (ds is None):
                             break
-
-                        if mgroup.loc[i].channel in [1,3,5]: #(1 km)
-                            newds = utils.interp_da2d(ds.Rad, 1./2, fillna=False)
-                        elif mgroup.loc[i].channel == 2: #(0.5 km)
-                            newds = utils.interp_da2d(ds.Rad, 1./4, fillna=False)
-                        else:
-                            newds = ds.Rad
-
-                            del newds['x_image']
-                            del newds['y_image']
-                            del newds['t']
-
+                            
+                        newds = regrid_2km(ds.Rad, ds.band_id.values[0])
                         newds['band'] = mgroup.loc[i].channel
                         mds.append(newds)
                         try:
@@ -162,11 +174,14 @@ class NOAAGOESS3(object):
                             print('spatial', sname, 'hname', hname, 'mname', mname,
                                   'mds[-1]', mds[-1], 'mds[0]', mds[0])
                             raise
+                            
                     if f is None: # missing a minute in this hour, just skip it for now
                         print("f is none")
                         break
 
                     mds = xr.concat(mds, dim='band')
+                    if ds is None:
+                        break
                     mds['t'] = ds['t']
                     hourly_das.append(mds)
                     # in this case, a snapshot is being captured every 30 seconds, ignore the hour
@@ -186,10 +201,92 @@ class NOAAGOESS3(object):
                 if not np.all(y0 == yn): print("y Indicies do not match"); continue
 
                 hourly_das = xr.concat(hourly_das, dim='t')
-                yield hourly_das
+                #yield hourly_das
 
                 if not store_files:
                     [os.remove(f) for f in hourly_files]
+    
+
+    def local_files(self, year=None, dayofyear=None):
+        data = []
+        for f in os.listdir(self.save_directory):
+            meta = get_filename_metadata(f)
+            if (year is not None) and (year == meta['year']):
+                continue
+            if (dayofyear is not None) and (dayofyear == meta['dayofyear']):
+                continue
+            meta['file'] = os.path.join(self.save_directory, f)
+            data.append(meta)
+            
+        data = pd.DataFrame(data)
+        data = data.set_index(['year', 'dayofyear', 'hour', 'minute', 'second', 'spatial'])
+        data = data.pivot(columns='channel')
+        return data
+    
+    
+    
+    
+def get_filename_metadata(f):
+    channel = int(f.split('_')[1][-2:])
+    spatial = f.split('-')[2]
+    t1 = f.split('_')[3]
+    year = int(t1[1:5])
+    dayofyear = int(t1[5:8])
+    hour = int(t1[8:10])
+    minute = int(t1[10:12])
+    second = int(t1[12:15])
+    return dict(channel=channel, year=year, dayofyear=dayofyear, hour=hour,
+                minute=minute, second=second, spatial=spatial)
+
+def regrid_2km(da, band):
+    if band in [1,3,5]: #(1 km)
+        da = utils.interp_da2d(da, 1./2, fillna=False)
+    elif band == 2: #(0.5 km)
+        da = utils.interp_da2d(da, 1./4, fillna=False)
+    return da
+
+def _open_and_merge_2km(files):
+    '''
+    This method opens a list of S3 NOAA ABI files,
+        normalizes by max and min radiances,
+        and interpolations to 2km.
+    Return:
+        xarray.DataArray (band: len(files), x, y)
+    '''
+    das = []
+    for f in files:
+        ds = xr.open_dataset(f)
+        
+        # normalize radiance
+        mn = ds['min_radiance_value_of_valid_pixels'].values
+        mx = ds['max_radiance_value_of_valid_pixels'].values
+                
+        ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
+        #ds['Rad'] *= 1e-3
+        # regrid to 2km to match all bands
+        newrad = regrid_2km(ds['Rad'], ds.band_id.values[0])
+        newrad = newrad.expand_dims(dim="band")
+        newrad = newrad.assign_coords(band=ds.band_id.values)
+        
+        # for some reason, these coordinates are included in band 4
+        if 't' in newrad.coords:
+            newrad = newrad.drop('t')
+        if 'y_image' in newrad.coords:
+            newrad = newrad.drop('y_image')
+        if 'x_image' in newrad.coords:
+            newrad = newrad.drop('x_image')
+            
+        das.append(newrad)
+        
+        # reindex so the concatenation works correctly
+        #das[-1] = das[-1].reindex({'x': das[0].x.values, 
+        #                           'y': das[0].y.values})
+        das[-1] = das[-1].assign_coords(x=das[0].x.values,
+                                        y=das[0].y.values)
+    # concatenate each file by band after interpolating to the same grid
+    das = xr.concat(das, 'band')
+    return das
+
 
 class GOESDataset(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
@@ -400,7 +497,6 @@ class Nowcast(Dataset):
         return I0, I1, IT
 
 
-
 # DO NOT USE
 # this class needs to be updated and dependent on GOESDataset
 class GOESDatasetS3(Dataset):
@@ -496,9 +592,7 @@ def download_data():
         noaa = NOAAGOESS3(channels=range(1,n_channels+1))
         for year in [2018]:
             for day in np.arange(1,365,25):
-                iterator = noaa.read_day(year, day)
-                for _ in iterator:
-                    pass
+                noaa.download_day(year, day)
 
 def training_set():
     for n_channels in [1,3,5,8]:
@@ -531,9 +625,7 @@ def download_conus_data():
         noaa = NOAAGOESS3(product='ABI-L1b-RadC', channels=range(1,n_channels+1))
         for year in [2018]:
             for day in [198,199,200]:
-                iterator = noaa.read_day(year, day)
-                for _ in iterator:
-                    pass
+                noaa.download_day(year, day)
 
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))

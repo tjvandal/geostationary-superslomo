@@ -9,8 +9,8 @@ import torch.nn as nn
 from torch import optim
 from torch.utils import data
 import torchvision
-import unet
-import data.goes16s3
+from slomo import unet
+from data import goes16s3
 
 # from flownet import FlowWarper, SloMoFlowNetMV, SloMoInterpNetMV
 import slomo.flownet as fl
