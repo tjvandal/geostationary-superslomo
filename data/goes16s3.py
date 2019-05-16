@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import scipy.misc
 import psutil
+from joblib import delayed, Parallel
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -26,7 +27,83 @@ import tools
 # temporary directory is used to save file from s3 and read via xarray
 #TEMPORARY_DIR = '/raid/tj/GOES/S3'
 TEMPORARY_DIR = '/mnt/nexai-goes/GOES/S3'
-EXAMPLE_DIR = '/mnt/nexai-goes/GOES/'
+EXAMPLE_DIR = '/raid/tj/GOES/SloMo'
+TEST_DIR = '/raid/tj/GOES/SloMo-test'
+
+def get_filename_metadata(f):
+    channel = int(f.split('_')[1][-2:])
+    spatial = f.split('-')[2]
+    t1 = f.split('_')[3]
+    year = int(t1[1:5])
+    dayofyear = int(t1[5:8])
+    hour = int(t1[8:10])
+    minute = int(t1[10:12])
+    second = int(t1[12:15])
+    return dict(channel=channel, year=year, dayofyear=dayofyear, hour=hour,
+                minute=minute, second=second, spatial=spatial)
+
+def regrid_2km(da, band):
+    if band in [1,3,5]: #(1 km)
+        da = utils.interp_da2d(da, 1./2, fillna=False)
+    elif band == 2: #(0.5 km)
+        da = utils.interp_da2d(da, 1./4, fillna=False)
+    return da
+
+def _open_and_merge_2km(files, normalize=True):
+    '''
+    This method opens a list of S3 NOAA ABI files,
+        normalizes by max and min radiances,
+        and interpolations to 2km.
+    Return:
+        xarray.DataArray (band: len(files), x, y)
+        
+    https://www.star.nesdis.noaa.gov/goesr/docs/ATBD/Imagery.pdf    
+    '''
+    norm_factors = {1: (-26, 805), 2: (-20, 628), 3: (-12, 373),
+                    4: (-4, 140), 5: (-3, 94), 6: (-1, 30), 7: (0, 25),
+                    8: (0, 28), 9: (0, 28), 10: (0, 44), 11: (0, 79),
+                    12: (0, 134), 13: (0, 183), 14: (0, 198), 15: (0, 211),
+                    16: (0, 168)}
+    das = []
+    for f in files:
+        try:
+            ds = xr.open_dataset(f)
+            band_id = ds.band_id.values[0]
+        except Exception:
+            raise ValueError("Cannot read file: {}".format(f))
+
+        # normalize radiance
+        if normalize:
+            mn = norm_factors[band_id][0]
+            mx = norm_factors[band_id][1]
+            #mn = ds['min_radiance_value_of_valid_pixels'].values
+            #mx = ds['max_radiance_value_of_valid_pixels'].values
+            ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
+            
+        #ds['Rad'] *= 1e-3
+        # regrid to 2km to match all bands
+        newrad = regrid_2km(ds['Rad'], band_id)
+        newrad = newrad.expand_dims(dim="band")
+        newrad = newrad.assign_coords(band=ds.band_id.values)
+
+        # for some reason, these coordinates are included in band 4
+        if 't' in newrad.coords:
+            newrad = newrad.drop('t')
+        if 'y_image' in newrad.coords:
+            newrad = newrad.drop('y_image')
+        if 'x_image' in newrad.coords:
+            newrad = newrad.drop('x_image')
+
+        das.append(newrad)
+
+        # reindex so the concatenation works correctly
+        #das[-1] = das[-1].reindex({'x': das[0].x.values, 
+        #                           'y': das[0].y.values})
+        das[-1] = das[-1].assign_coords(x=das[0].x.values,
+                                        y=das[0].y.values)
+    # concatenate each file by band after interpolating to the same grid
+    das = xr.concat(das, 'band')
+    return das
 
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
@@ -38,7 +115,7 @@ class NOAAGOESS3(object):
         self.conn = boto.connect_s3(host='s3.amazonaws.com')
         self.goes_bucket = self.conn.get_bucket(self.bucket_name)
         self.save_directory = os.path.join(save_directory, product)    
-        
+
     def year_day_pairs(self):
         '''
         Gets all year and day pairs in S3 for the given product
@@ -55,7 +132,7 @@ class NOAAGOESS3(object):
                 d = int(key_day.name.split('/')[2])
                 days += [(y, d)]
         return days
-    
+
     def day_keys(self, year, day, hours=range(12,24)):
         keybase = '%(product)s/%(year)04i/%(day)03i/' % dict(product=self.product,
                                                            year=year, day=day)
@@ -73,7 +150,7 @@ class NOAAGOESS3(object):
                 c = int(c[3:])
                 if c not in self.channels:
                     continue
-                    
+
                 minute = int(t[10:12])
                 second = int(t[12:15])
                 data.append(dict(channel=c, year=year, day=day, hour=hour,
@@ -102,6 +179,7 @@ class NOAAGOESS3(object):
             os.makedirs(directory)
         k = boto.s3.key.Key(self.goes_bucket)
         k.key = keyname
+
         data_file = os.path.join(directory, os.path.basename(keyname))
         if os.path.exists(data_file):
             pass
@@ -122,175 +200,82 @@ class NOAAGOESS3(object):
             ds = None
             data_file = None
         return ds, data_file
-    
+
     def download_day(self, year, day, hours=range(12, 25)):
         '''
         Downloads all files for a given year and dayofyear for the defined channels
         '''
         keys_df = self.day_keys(year, day, hours=hours)
         for i, row in keys_df.iterrows():
-            data_file = self.download_from_s3(row.keyname, self.save_directory)
-            
-    #TODO -- This function is terrible, simplify by reading local files only
-    def read_day(self, year, day, hours=range(12,25),
-                 store_files=True):
-        '''
-        Reads and joins product data for entire day in temporal order.
-        args:
-            year: int
-            day: int
-        returns:
-            list(xarray.DataArray)
-        '''
-        t0 = time.time()
-        keys_df = self.day_keys(year, day, hours=hours)
-        if len(keys_df) == 0: return
-
-        grouped_spatial = keys_df.groupby(by=['spatial'])
-        daily_das = []
-        for sname, sgrouped in grouped_spatial: #max of 2 groups
-            grouped_hourly = sgrouped.groupby(by=["hour"])
-            for hname, hgroup in grouped_hourly: #limited to 24
-                print("Day", day, "Hour", hname)
-                hourly_das = []
-                hourly_files = []
-                grouped_minutes = hgroup.groupby(by=['minute'])
-
-                for mname, mgroup in grouped_minutes: # 60 minutes
-                    mds = []
-                    for i in mgroup.index:
-                        ds, f = self.read_nc_from_s3(mgroup.loc[i].keyname)
-                        hourly_files.append(f)
-                        if (f is None) or (ds is None):
-                            break
-                            
-                        newds = regrid_2km(ds.Rad, ds.band_id.values[0])
-                        newds['band'] = mgroup.loc[i].channel
-                        mds.append(newds)
-                        try:
-                            mds[-1]['x'].values = mds[0]['x'].values
-                            mds[-1]['y'].values = mds[0]['y'].values
-                        except ValueError:
-                            print('spatial', sname, 'hname', hname, 'mname', mname,
-                                  'mds[-1]', mds[-1], 'mds[0]', mds[0])
-                            raise
-                            
-                    if f is None: # missing a minute in this hour, just skip it for now
-                        print("f is none")
-                        break
-
-                    mds = xr.concat(mds, dim='band')
-                    if ds is None:
-                        break
-                    mds['t'] = ds['t']
-                    hourly_das.append(mds)
-                    # in this case, a snapshot is being captured every 30 seconds, ignore the hour
-                    if np.unique(mds.band.values).size < mds.band.shape[0]:
-                        print("This hour has more than 1 snapshot per minute, skip it.")
-                        hourly_das = []
-                        break
-
-                if len(hourly_das) == 0: continue
-
-                x0 = hourly_das[0].x.values
-                xn = hourly_das[-1].x.values
-                y0 = hourly_das[0].y.values
-                yn = hourly_das[-1].y.values
-
-                if not np.all(x0 == xn): print("x Indicies do not match"); continue
-                if not np.all(y0 == yn): print("y Indicies do not match"); continue
-
-                hourly_das = xr.concat(hourly_das, dim='t')
-                #yield hourly_das
-
-                if not store_files:
-                    [os.remove(f) for f in hourly_files]
-    
+            save_dir= os.path.join(self.save_directory,
+                                   '%04i/%03i/%02i/%02i/%s/' % (year, day, row.hour, row.minute,
+                                                                row.spatial))
+            data_file = self.download_from_s3(row.keyname, save_dir)
 
     def local_files(self, year=None, dayofyear=None):
         data = []
-        for f in os.listdir(self.save_directory):
-            meta = get_filename_metadata(f)
-            if (year is not None) and (year == meta['year']):
-                continue
-            if (dayofyear is not None) and (dayofyear == meta['dayofyear']):
-                continue
-            meta['file'] = os.path.join(self.save_directory, f)
-            data.append(meta)
-            
+        base_dir = self.save_directory
+        if year is not None:
+            base_dir = os.path.join(base_dir, '%04i' % year)
+            if dayofyear is not None:
+                base_dir = os.path.join(base_dir, '%03i' % dayofyear)            
+        #for f in os.listdir(self.save_directory):
+        for directory, folders, files in os.walk(base_dir):
+            for f in files:
+                if f[-3:] == '.nc':
+                    meta = get_filename_metadata(f)
+                    meta['file'] = os.path.join(directory, f)
+                    data.append(meta)
+
         data = pd.DataFrame(data)
-        data = data.set_index(['year', 'dayofyear', 'hour', 'minute', 'second', 'spatial'])
-        data = data.pivot(columns='channel')
+        if len(data) > 0:
+            data = data.set_index(['year', 'dayofyear', 'hour', 'minute', 'second', 'spatial'])
+            data = data.pivot(columns='channel')
         return data
-    
-    
-    
-    
-def get_filename_metadata(f):
-    channel = int(f.split('_')[1][-2:])
-    spatial = f.split('-')[2]
-    t1 = f.split('_')[3]
-    year = int(t1[1:5])
-    dayofyear = int(t1[5:8])
-    hour = int(t1[8:10])
-    minute = int(t1[10:12])
-    second = int(t1[12:15])
-    return dict(channel=channel, year=year, dayofyear=dayofyear, hour=hour,
-                minute=minute, second=second, spatial=spatial)
 
-def regrid_2km(da, band):
-    if band in [1,3,5]: #(1 km)
-        da = utils.interp_da2d(da, 1./2, fillna=False)
-    elif band == 2: #(0.5 km)
-        da = utils.interp_da2d(da, 1./4, fillna=False)
-    return da
+    def iterate_day(self, year, day, hours=range(12,25), max_queue_size=5, min_queue_size=3,
+                    normalize=True):
+        # get locally stored files
+        file_df = self.local_files(year, day)
+        if len(file_df) == 0: return
 
-def _open_and_merge_2km(files):
-    '''
-    This method opens a list of S3 NOAA ABI files,
-        normalizes by max and min radiances,
-        and interpolations to 2km.
-    Return:
-        xarray.DataArray (band: len(files), x, y)
-    '''
-    das = []
-    for f in files:
-        ds = xr.open_dataset(f)
-        
-        # normalize radiance
-        mn = ds['min_radiance_value_of_valid_pixels'].values
-        mx = ds['max_radiance_value_of_valid_pixels'].values
+        grouped_spatial = file_df.groupby(by=['spatial'])
+        for sname, sgrouped in grouped_spatial:
+            running_samples = []
+            for idx, row in sgrouped.iterrows():
+                # (2018, 1, 12, 0, 577, 'RadM2')
+                year, day, hour, minute, second, _ = idx
+                if hour not in hours:
+                    running_samples = []
+                    continue
                 
-        ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
-        #ds['Rad'] *= 1e-3
-        # regrid to 2km to match all bands
-        newrad = regrid_2km(ds['Rad'], ds.band_id.values[0])
-        newrad = newrad.expand_dims(dim="band")
-        newrad = newrad.assign_coords(band=ds.band_id.values)
-        
-        # for some reason, these coordinates are included in band 4
-        if 't' in newrad.coords:
-            newrad = newrad.drop('t')
-        if 'y_image' in newrad.coords:
-            newrad = newrad.drop('y_image')
-        if 'x_image' in newrad.coords:
-            newrad = newrad.drop('x_image')
-            
-        das.append(newrad)
-        
-        # reindex so the concatenation works correctly
-        #das[-1] = das[-1].reindex({'x': das[0].x.values, 
-        #                           'y': das[0].y.values})
-        das[-1] = das[-1].assign_coords(x=das[0].x.values,
-                                        y=das[0].y.values)
-    # concatenate each file by band after interpolating to the same grid
-    das = xr.concat(das, 'band')
-    return das
+                files = row['file'][self.channels]
+                try:
+                    da = _open_and_merge_2km(files.values, normalize=normalize)
+                    running_samples.append(da)
+                except ValueError:
+                    running_samples = []
+                    continue
 
 
+                if len(running_samples) > 1:
+                    running_samples[-1]['x'].values = running_samples[0]['x'].values
+                    running_samples[-1]['y'].values = running_samples[0]['y'].values
+
+                if len(running_samples) == max_queue_size:
+                    try:
+                        yield xr.concat(running_samples, dim='t')
+                    except Exception as err:
+                        print([type(el) for el in running_samples])
+                        print(err)
+                    while len(running_samples) > min_queue_size:
+                        running_samples.pop(0)
+
+
+## SloMo Training Dataset on NOAA GOES S3 data
 class GOESDataset(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
-                 n_upsample=5, n_overlap=3):
+                 n_upsample=15, n_overlap=5):
         self.example_directory = example_directory
         if not os.path.exists(self.example_directory):
             os.makedirs(self.example_directory)
@@ -309,35 +294,26 @@ class GOESDataset(Dataset):
             return True
         return False
 
-    def write_example_blocks(self, year, day, channels=range(1,17), force=False):
+    def write_example_blocks(self, year, day, channels=range(1,17), force=False,
+                             patch_width=128+6):
         counter = 0
-        goes = NOAAGOESS3(channels=channels)
         if (self._check_directory(year, day)) and (not force):  return
+        goes = NOAAGOESS3(channels=channels)
+        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
+        #           overlap by 5 minutes
+        data_iterator = goes.iterate_day(year, day, max_queue_size=12, min_queue_size=1)
 
-        for data in goes.read_day(year, day):
-            blocked_data = utils.blocks(data, width=360)
-
-            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
-            # overlap by 5 minutes
-
-            n = self.n_upsample + self.n_overlap + 1
-            for blocks in blocked_data:
-                idxs = np.arange(0, blocks.shape[0], self.n_upsample)
-                for i in idxs:
-                    if i + n > blocks.shape[0]:
-                        i = blocks.shape[0] - n
-
-                    b = blocks[i:i+n]
-                    if np.all(np.isfinite(b)) and (b.shape[0] == n):
-                        fname = "%04i_%03i_%07i.npy" % (year, day, counter)
-                        save_file = os.path.join(self.example_directory, fname)
-                        print("saved file: %s" % save_file)
-                        np.save(save_file, b)
-                        #self.bucket.upload_file(save_file, '%s/%s' % (self.s3_base_path, fname))
-                        #os.remove(save_file)
-                        counter += 1
-                    else:
-                        print("Is not finite")
+        for data in data_iterator:
+            blocked_data = utils.blocks(data, width=patch_width)
+            for b in blocked_data:
+                if np.all(np.isfinite(b)):
+                    fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                    save_file = os.path.join(self.example_directory, fname)
+                    print("saved file: %s" % save_file)
+                    np.save(save_file, b)
+                    counter += 1
+                else:
+                    pass
         self._example_files()
 
     def transform(self, block):
@@ -347,12 +323,12 @@ class GOESDataset(Dataset):
         block = block[i:n_select+i]
 
         # randomly shift vertically 
-        i = np.random.choice(range(0,8))
-        block = block[:,:,i:i+352]
+        i = np.random.choice(range(0,6))
+        block = block[:,:,i:i+128]
 
         # randomly shift horizontally
-        i = np.random.choice(range(0,8))
-        block = block[:,:,:,i:i+352]
+        i = np.random.choice(range(0,6))
+        block = block[:,:,:,i:i+128]
 
         # randomly flip up-down
         #if np.random.uniform() > 0.5:
@@ -385,7 +361,7 @@ class GOESDataset(Dataset):
 
         return I0, I1, IT
 
-
+### Work in progress
 class Nowcast(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
                  n_overlap=3):
@@ -413,7 +389,7 @@ class Nowcast(Dataset):
         goes = NOAAGOESS3(channels=channels)
         if (self._check_directory(year, day)) and (not force):  return
 
-        for data in goes.read_day(year, day):
+        for data in goes.iterator_day(year, day):
             blocked_data = utils.blocks(data, width=360)
 
             # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
@@ -497,115 +473,35 @@ class Nowcast(Dataset):
         return I0, I1, IT
 
 
-# DO NOT USE
-# this class needs to be updated and dependent on GOESDataset
-class GOESDatasetS3(Dataset):
-    def __init__(self, s3_bucket_name="nex-goes-slowmo",
-                 s3_base_path="train/", buffer_size=60,
-                 n_upsample=5, n_overlap=3):
-        self.bucket_name = s3_bucket_name
-        self.resource = boto3.resource('s3')
-        self.bucket = self.resource.Bucket(s3_bucket_name)
-        self.s3_base_path = s3_base_path
-        self.buffer_size = buffer_size
-        self.s3_keys = list(self.bucket.objects.filter(Prefix=self.s3_base_path))
-        #self.s3_keys = self.s3_keys[:100]
-        #print(self.s3_keys)
-        print("Number of training sample", len(self.s3_keys))
-        self.N_keys = len(self.s3_keys)
-        self.n_upsample = n_upsample
-        self.n_overlap = n_overlap
-
-    def in_s3(self, year, day):
-        yeardaykeys = self.bucket.objects.filter(Prefix='%s/%4i_%03i' % (self.s3_base_path, year, day)) 
-        if len(list(yeardaykeys)) > 0:
-            return True
-        return False
-
-    def write_example_blocks_to_s3(self, year, day, channels=range(1,17)):
-        counter = 0
-        goes = NOAAGOESS3(channels=channels)
-        if self.in_s3(year, day):  return
-
-        for data in goes.read_day(year, day):
-            print(data.shape)
-            blocked_data = utils.blocks(data, width=360)
-
-            if not os.path.exists(TEMPORARY_DIR):
-                os.makedirs(TEMPORARY_DIR)
-
-            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
-            # overlap by 5 minutes
-
-            n = self.n_upsample + self.n_overlap + 1
-            for blocks in blocked_data:
-                idxs = np.arange(0, blocks.shape[0], self.n_upsample)
-                for i in idxs:
-                    if i + n > blocks.shape[0]:
-                        i = blocks.shape[0] - n
-
-                    b = blocks[i:i+n]
-                    if np.all(np.isfinite(b)):
-                        fname = "%04i_%03i_%07i.npy" % (year, day, counter)
-                        save_file = os.path.join(TEMPORARY_DIR, fname)
-                        print("saved file: %s" % save_file)
-                        np.save(save_file, b)
-                        self.bucket.upload_file(save_file, '%s/%s' % (self.s3_base_path, fname))
-                        os.remove(save_file)
-                        counter += 1
-
-    def __len__(self):
-        return self.N_keys
-
-    def __getitem__(self, idx):
-        obj = self.s3_keys[idx]
-        key = obj.key
-        #if key is None:
-        #    return self.__getitem__((idx + 1) % self.N_keys)
-
-        #s3 = boto3.resource('s3')
-        #obj = s3.Object(self.bucket_name, key)
-
-        #try:
-        bio = io.BytesIO(obj.get()['Body'].read())
-        #except botocore.Exceptions.ClientError as ex:
-        #    if obj['Error']['Code'] == 'NoSuchKey':
-        #        return self.__getitem__(idx + 1 % self.N_keys)
-        #    else:
-        #        raise ex
-        try:
-            block = np.load(bio)
-        except Exception as err:
-            raise TypeError
-        block = self.transform(block)
-
-        I0 = torch.from_numpy(block[0])
-        I1 = torch.from_numpy(block[-1])
-        IT = torch.from_numpy(block[1:-1])
-
-        return I0, I1, IT
-
-
-def download_data():
-    for n_channels in [16,]:
-        goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Train/' % n_channels)
+def download_data(test=False):
+    if test:
+        years = [2019]
+        days = np.arange(1, 150, 10)
+    else:
+        years = [2017, 2018]
+        days = np.arange(1, 365, 5)
+    for n_channels in [3,8]:
         noaa = NOAAGOESS3(channels=range(1,n_channels+1))
-        for year in [2018]:
-            for day in np.arange(1,365,25):
+        for year in years:
+            for day in days:
                 noaa.download_day(year, day)
 
 def training_set():
-    for n_channels in [1,3,5,8]:
-        #goespytorch = GOESDataset(example_directory='/raid/tj/GOES/5Min-%iChannels-Train/' % n_channels)
-        example_directory = os.path.join(EXAMPLE_DIR,'5Min-%iChannels-Train' % n_channels)
+    years = [2017, 2018]
+    for n_channels in [3,8]:
+        example_directory = os.path.join(EXAMPLE_DIR, '9Min-%iChannels-Train' % n_channels)
         goespytorch = GOESDataset(example_directory=example_directory)
-        for year in [2018]:
-            for day in np.arange(1,365,25):
-                goespytorch.write_example_blocks(year, day,
+        jobs = []
+        for year in years:
+            for day in np.arange(1,365):
+                print('Year: {}, Day: {}'.format(year, day))
+                jobs.append(delayed(goespytorch.write_example_blocks)(year, day,
                                      channels=range(1,n_channels+1),
-                                     force=False)
+                                     force=False))
+        cpu_count = 6
+        Parallel(n_jobs=cpu_count)(jobs)
 
-def test_set():
+'''def test_set():
     for n_channels in [8,]:
         data = NOAAGOESS3(channels=range(1,n_channels+1))
         year = 2018
@@ -619,6 +515,7 @@ def test_set():
             print("day", day)
             for dataarray in data.read_day(year, day):
                 pass
+'''
 
 def download_conus_data():
     for n_channels in [3,]:
@@ -631,6 +528,26 @@ if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
     #noaagoes.read_day(2017, 74).next()
     #download_data()
-    training_set()
+    download_data(test=True)
+    #training_set()
     #test_set()
-   # download_conus_data()
+    #download_conus_data()
+    # move files
+    '''
+    for d in os.listdir(TEMPORARY_DIR):
+        dfull = os.path.join(TEMPORARY_DIR, d)
+        for f in os.listdir(dfull):
+            if f[-3:] != '.nc':
+                continue
+            meta = get_filename_metadata(f)
+            save_dir= os.path.join(dfull, '%04i/%03i/%02i/%02i/%s/' % (meta['year'],
+                                                                       meta['dayofyear'],
+                                                                       meta['hour'], meta['minute'],
+                                                                       meta['spatial']))
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+
+            new_filepath = os.path.join(save_dir, f)
+            old_filepath = os.path.join(dfull, f)
+            os.rename(old_filepath, new_filepath)
+    '''

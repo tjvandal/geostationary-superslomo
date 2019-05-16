@@ -9,11 +9,10 @@ import torchvision
 from slomo import flownet as fl
 import numpy as np
 
-
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def load_models(n_channels, model_path, multivariate=False):
-    
+
     if multivariate:
         model_filename = os.path.join(model_path, 'checkpoint.flownet.mv.pth.tar')
         flownet = fl.SloMoFlowNetMV(n_channels)#.cuda()
@@ -22,9 +21,9 @@ def load_models(n_channels, model_path, multivariate=False):
         model_filename = os.path.join(model_path, 'checkpoint.flownet.pth.tar')
         flownet = fl.SloMoFlowNet(n_channels)#.cuda()
         interpnet = fl.SloMoInterpNet(n_channels)#.cuda()
-        
+
     warper = fl.FlowWarper()
-    
+
     flownet = flownet.to(device)
     interpnet = interpnet.to(device)
     warper = warper.to(device)
@@ -63,7 +62,8 @@ def block_predictions_to_dataarray(predictions, block):
 
     return da
 
-def inference_5min_block(block, flownet, interpnet, warper, multivariate, T=4):
+# this function is nonsensical
+def inference_block(block, flownet, interpnet, warper, multivariate, T=4):
     block_vals = torch.from_numpy(block.values)
     block_vals[np.isnan(block_vals)] = 0
     n_channels = block_vals.shape[1]
@@ -77,7 +77,7 @@ def inference_5min_block(block, flownet, interpnet, warper, multivariate, T=4):
 
         f = flownet(I0, I1)
         n_channels = I0.shape[1]
-        
+
         if multivariate:
             f_01 = f[:,:2*n_channels]
             f_10 = f[:,2*n_channels:]
@@ -90,11 +90,50 @@ def inference_5min_block(block, flownet, interpnet, warper, multivariate, T=4):
             t = 1. * j / (T+1)
             I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(I0, I1, f_01, f_10, t)
             predicted_frames.append(I_t.cpu().detach().numpy())
-        
+
         preds += [I0.cpu().numpy()] + predicted_frames
     del f_01, f_10, f, I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1
     torch.cuda.empty_cache()
     return block_predictions_to_dataarray(preds, block)
+
+def _inference(X0, X1, flownet, interpnet, warper, 
+               multivariate, T=4, block_size=None):
+    '''
+    Given two consecutive frames, interpolation T between them 
+        using flownet and interpnet
+    Returns:
+        Interpolated Frames
+    '''
+    
+    X0_arr_torch = torch.from_numpy(X0.values)
+    X1_arr_torch = torch.from_numpy(X1.values)
+
+    # nans to 0
+    X0_arr_torch[np.isnan(X0_arr_torch)] = 0.
+    X1_arr_torch[np.isnan(X1_arr_torch)] = 0.
+    
+    X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device)
+    X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device)
+
+    f = flownet(X0_arr_torch, X1_arr_torch)
+    n_channels = X0_arr_torch.shape[1]
+        
+    if multivariate:
+        f_01 = f[:,:2*n_channels]
+        f_10 = f[:,2*n_channels:]
+    else:
+        f_01 = f[:,:2]
+        f_10 = f[:,2:]
+        
+    predicted_frames = []
+    
+    for j in range(1,T+1):
+        t = 1. * j / (T+1)
+        I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(X0_arr_torch, X1_arr_torch, f_01, f_10, t)
+        predicted_frames.append(I_t.cpu().detach().numpy())
+
+    torch.cuda.empty_cache()
+    return predicted_frames
 
 def merge_and_average_dataarrays(dataarrays):
     ds = xr.merge([xr.Dataset({k: d}) for k, d in enumerate(dataarrays)])
@@ -103,4 +142,25 @@ def merge_and_average_dataarrays(dataarrays):
         das.append(ds[b])
 
     return xr.concat(das).mean('concat_dims', skipna=True)
+
+def inference(X0, X1, flownet, interpnet, warper, 
+              multivariate, T=4, block_size=352):
+    '''
+    Given two consecutive frames, interpolation T between them 
+        using flownet and interpnet
+    Returns:
+        Interpolated Frames
+    '''
+    # Get a list of dataarrays chunked
+    X0_blocks = utils.blocks(X0, width=block_size)
+    X1_blocks = utils.blocks(X1, width=block_size)
+
+    interpolated_blocks = []
+    for x0, x1 in zip(X0_blocks, X1_blocks):
+        predicted_frames = _inference(x0, x1, flownet, 
+                                      interpnet, warper,
+                                      multivariate, T)
+        predicted_frames = [x0.values[np.newaxis]] + predicted_frames + [x1.values[np.newaxis]]
+        interpolated_blocks += [block_predictions_to_dataarray(predicted_frames, x0)]
+    return merge_and_average_dataarrays(interpolated_blocks)
 
