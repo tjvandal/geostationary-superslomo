@@ -361,6 +361,97 @@ class GOESDataset(Dataset):
 
         return I0, I1, IT
 
+class GOESDatasetPT(Dataset):
+    def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
+                 n_upsample=15, n_overlap=5):
+        self.example_directory = example_directory
+        if not os.path.exists(self.example_directory):
+            os.makedirs(self.example_directory)
+        self._example_files()
+        self.n_upsample = n_upsample
+        self.n_overlap = n_overlap
+
+    def _example_files(self):
+        self.example_files = [os.path.join(self.example_directory, f) for f in
+                              os.listdir(self.example_directory) if '.pt' == f[-3:]]
+        self.N_files = len(self.example_files)
+
+    def _check_directory(self, year, day):
+        yeardayfiles = [f for f in self.example_files if '%4i_%03i' % (year, day) in f]
+        if len(list(yeardayfiles)) > 0:
+            return True
+        return False
+
+    def write_example_blocks(self, year, day, channels=range(1,17), force=False,
+                             patch_width=128+6):
+        counter = 0
+        if (self._check_directory(year, day)) and (not force):  return
+        goes = NOAAGOESS3(channels=channels)
+        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
+        #           overlap by 5 minutes
+        data_iterator = goes.iterate_day(year, day, max_queue_size=12, min_queue_size=1)
+
+        for data in data_iterator:
+            blocked_data = utils.blocks(data, width=patch_width)
+            for b in blocked_data:
+                if np.all(np.isfinite(b)):
+                    #fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                    fname = "%04i_%03i_%07i.pt" % (year, day, counter)
+                    save_file = os.path.join(self.example_directory, fname)
+                    print("saved file: %s" % save_file)
+                    #np.save(save_file, b)
+                    btensor = torch.from_numpy(b.values)
+                    torch.save(btensor, save_file)
+                    counter += 1
+                else:
+                    pass
+        self._example_files()
+
+    def transform(self, block):
+        n_select = self.n_upsample + 1
+        # randomly shift temporally
+        i = np.random.choice(range(0,self.n_overlap))
+        block = block[i:n_select+i]
+
+        # randomly shift vertically 
+        i = np.random.choice(range(0,6))
+        block = block[:,:,i:i+128]
+
+        # randomly shift horizontally
+        i = np.random.choice(range(0,6))
+        block = block[:,:,:,i:i+128]
+
+        # randomly flip up-down
+        #if np.random.uniform() > 0.5:
+            #block = block[:,::-1]
+            #block = np.flip(block, axis=1).copy()
+
+        # randomly flip right-left 
+        #if np.random.uniform() > 0.5:
+        #    block = block[:,:,::-1]
+        #    block = np.flip(block, axis=2).copy()
+
+        return block
+
+    def __len__(self):
+        return self.N_files
+
+    def __getitem__(self, idx):
+        f = self.example_files[idx]
+        try:
+            block = torch.load(f)
+            block = self.transform(block)
+            I0 = block[0]
+            I1 = block[-1]
+            IT = block[1:-1]
+        except Exception as err:
+            os.remove(f)
+            del self.example_files[idx]
+            self.N_files -= 1
+            raise TypeError("Cannot load file: {}".formate(f))
+
+        return I0, I1, IT
+
 ### Work in progress
 class Nowcast(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
@@ -489,7 +580,7 @@ def download_data(test=False):
 def training_set():
     years = [2017, 2018]
     for n_channels in [3,8]:
-        example_directory = os.path.join(EXAMPLE_DIR, '9Min-%iChannels-Train' % n_channels)
+        example_directory = os.path.join(EXAMPLE_DIR, '9Min-%iChannels-Train-pt' % n_channels)
         goespytorch = GOESDataset(example_directory=example_directory)
         jobs = []
         for year in years:
@@ -528,8 +619,8 @@ if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
     #noaagoes.read_day(2017, 74).next()
     #download_data()
-    download_data(test=True)
-    #training_set()
+    #download_data(test=True)
+    training_set()
     #test_set()
     #download_conus_data()
     # move files

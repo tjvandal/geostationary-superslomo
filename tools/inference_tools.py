@@ -6,7 +6,9 @@ import xarray as xr
 import utils
 import torch
 import torchvision
-from slomo import flownet as fl
+#from slomo import flownet as fl
+from slomo import flownet2 as fl
+
 import numpy as np
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
