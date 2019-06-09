@@ -9,7 +9,7 @@ import time
 import shutil
 
 import boto
-import boto3
+#import boto3
 import botocore
 import xarray as xr
 import numpy as np
@@ -23,12 +23,6 @@ from torch.utils.data import Dataset, DataLoader
 
 import tools
 
-
-# temporary directory is used to save file from s3 and read via xarray
-#TEMPORARY_DIR = '/raid/tj/GOES/S3'
-TEMPORARY_DIR = '/mnt/nexai-goes/GOES/S3'
-EXAMPLE_DIR = '/raid/tj/GOES/SloMo'
-TEST_DIR = '/raid/tj/GOES/SloMo-test'
 
 def get_filename_metadata(f):
     channel = int(f.split('_')[1][-2:])
@@ -108,13 +102,13 @@ def _open_and_merge_2km(files, normalize=True):
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
     def __init__(self, product='ABI-L1b-RadM', channels=range(1,17),
-                       save_directory='/mnt/nexai-goes/GOES/S3'):
+                       save_directory='/nobackupp10/tvandal/data/goes16'):
         self.bucket_name = 'noaa-goes16'
         self.product = product
         self.channels = channels
         self.conn = boto.connect_s3(host='s3.amazonaws.com')
         self.goes_bucket = self.conn.get_bucket(self.bucket_name)
-        self.save_directory = os.path.join(save_directory, product)    
+        self.save_directory = os.path.join(save_directory, product)
 
     def year_day_pairs(self):
         '''
@@ -361,97 +355,6 @@ class GOESDataset(Dataset):
 
         return I0, I1, IT
 
-class GOESDatasetPT(Dataset):
-    def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
-                 n_upsample=15, n_overlap=5):
-        self.example_directory = example_directory
-        if not os.path.exists(self.example_directory):
-            os.makedirs(self.example_directory)
-        self._example_files()
-        self.n_upsample = n_upsample
-        self.n_overlap = n_overlap
-
-    def _example_files(self):
-        self.example_files = [os.path.join(self.example_directory, f) for f in
-                              os.listdir(self.example_directory) if '.pt' == f[-3:]]
-        self.N_files = len(self.example_files)
-
-    def _check_directory(self, year, day):
-        yeardayfiles = [f for f in self.example_files if '%4i_%03i' % (year, day) in f]
-        if len(list(yeardayfiles)) > 0:
-            return True
-        return False
-
-    def write_example_blocks(self, year, day, channels=range(1,17), force=False,
-                             patch_width=128+6):
-        counter = 0
-        if (self._check_directory(year, day)) and (not force):  return
-        goes = NOAAGOESS3(channels=channels)
-        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
-        #           overlap by 5 minutes
-        data_iterator = goes.iterate_day(year, day, max_queue_size=12, min_queue_size=1)
-
-        for data in data_iterator:
-            blocked_data = utils.blocks(data, width=patch_width)
-            for b in blocked_data:
-                if np.all(np.isfinite(b)):
-                    #fname = "%04i_%03i_%07i.npy" % (year, day, counter)
-                    fname = "%04i_%03i_%07i.pt" % (year, day, counter)
-                    save_file = os.path.join(self.example_directory, fname)
-                    print("saved file: %s" % save_file)
-                    #np.save(save_file, b)
-                    btensor = torch.from_numpy(b.values)
-                    torch.save(btensor, save_file)
-                    counter += 1
-                else:
-                    pass
-        self._example_files()
-
-    def transform(self, block):
-        n_select = self.n_upsample + 1
-        # randomly shift temporally
-        i = np.random.choice(range(0,self.n_overlap))
-        block = block[i:n_select+i]
-
-        # randomly shift vertically 
-        i = np.random.choice(range(0,6))
-        block = block[:,:,i:i+128]
-
-        # randomly shift horizontally
-        i = np.random.choice(range(0,6))
-        block = block[:,:,:,i:i+128]
-
-        # randomly flip up-down
-        #if np.random.uniform() > 0.5:
-            #block = block[:,::-1]
-            #block = np.flip(block, axis=1).copy()
-
-        # randomly flip right-left 
-        #if np.random.uniform() > 0.5:
-        #    block = block[:,:,::-1]
-        #    block = np.flip(block, axis=2).copy()
-
-        return block
-
-    def __len__(self):
-        return self.N_files
-
-    def __getitem__(self, idx):
-        f = self.example_files[idx]
-        try:
-            block = torch.load(f)
-            block = self.transform(block)
-            I0 = block[0]
-            I1 = block[-1]
-            IT = block[1:-1]
-        except Exception as err:
-            os.remove(f)
-            del self.example_files[idx]
-            self.N_files -= 1
-            raise TypeError("Cannot load file: {}".formate(f))
-
-        return I0, I1, IT
-
 ### Work in progress
 class Nowcast(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
@@ -563,24 +466,28 @@ class Nowcast(Dataset):
 
         return I0, I1, IT
 
-
-def download_data(test=False):
+def download_data(test=False, n_jobs=1):
     if test:
         years = [2019]
-        days = np.arange(1, 150, 10)
+        days = np.arange(1, 150, 5)
     else:
         years = [2017, 2018]
         days = np.arange(1, 365, 5)
-    for n_channels in [3,8]:
+    jobs = []
+    for n_channels in [16,]:
         noaa = NOAAGOESS3(channels=range(1,n_channels+1))
         for year in years:
             for day in days:
-                noaa.download_day(year, day)
+                jobs.append(delayed(noaa.download_day)(year, day))
+    Parallel(n_jobs=n_jobs)(jobs)
 
-def training_set():
+
+
+
+def training_set(directory='./'):
     years = [2017, 2018]
     for n_channels in [3,8]:
-        example_directory = os.path.join(EXAMPLE_DIR, '9Min-%iChannels-Train-pt' % n_channels)
+        example_directory = os.path.join(directory, '9Min-%iChannels-Train-pt' % n_channels)
         goespytorch = GOESDataset(example_directory=example_directory)
         jobs = []
         for year in years:
@@ -590,23 +497,8 @@ def training_set():
                                      channels=range(1,n_channels+1),
                                      force=False))
         cpu_count = 6
-        Parallel(n_jobs=cpu_count)(jobs)
 
-'''def test_set():
-    for n_channels in [8,]:
-        data = NOAAGOESS3(channels=range(1,n_channels+1))
-        year = 2018
-        # March 3 Noreaster
-        noreaster_day = datetime.datetime(year, 3, 3).timetuple().tm_yday
-        # July 18 Montana wild fire
-        wildfire_day = datetime.datetime(year, 7, 18).timetuple().tm_yday
-        # October 10 Hurricane Michael 
-        hurricane_day = datetime.datetime(year, 10, 10).timetuple().tm_yday
-        for day in [noreaster_day, wildfire_day, hurricane_day]:
-            print("day", day)
-            for dataarray in data.read_day(year, day):
-                pass
-'''
+        Parallel(n_jobs=cpu_count)(jobs)
 
 def download_conus_data():
     for n_channels in [3,]:
@@ -617,28 +509,9 @@ def download_conus_data():
 
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
-    #noaagoes.read_day(2017, 74).next()
-    #download_data()
-    #download_data(test=True)
-    training_set()
+    download_data(n_jobs=4)
+    download_data(test=True, j_jobs=4)
+
+    #training_set()
     #test_set()
     #download_conus_data()
-    # move files
-    '''
-    for d in os.listdir(TEMPORARY_DIR):
-        dfull = os.path.join(TEMPORARY_DIR, d)
-        for f in os.listdir(dfull):
-            if f[-3:] != '.nc':
-                continue
-            meta = get_filename_metadata(f)
-            save_dir= os.path.join(dfull, '%04i/%03i/%02i/%02i/%s/' % (meta['year'],
-                                                                       meta['dayofyear'],
-                                                                       meta['hour'], meta['minute'],
-                                                                       meta['spatial']))
-            if not os.path.exists(save_dir):
-                os.makedirs(save_dir)
-
-            new_filepath = os.path.join(save_dir, f)
-            old_filepath = os.path.join(dfull, f)
-            os.rename(old_filepath, new_filepath)
-    '''
