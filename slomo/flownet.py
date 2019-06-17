@@ -104,7 +104,7 @@ class SloMoInterpNetMV(nn.Module):
         #self.device = device
         self.warper = FlowWarper()
         #self.unet = unet.UNet(n_channels*4 + 4, 6)
-        self.unet = unet.UNet(n_channels*4 + n_channels*4, 2+4*n_channels)
+        self.unet = unet.UNet(n_channels*4 + n_channels*4, n_channels + 4*n_channels)
         self.n_channels = n_channels
 
     def forward(self, I0, I1, F0, F1, t):
@@ -139,13 +139,16 @@ class SloMoInterpNetMV(nn.Module):
         # delta_f_t0, delta_f_t1: 2 * n_channels each
         # I0, I1: 3 channels each
         interp = self.unet(x_flow)
-        V_t0 = torch.sigmoid(torch.unsqueeze(interp[:,0], 1)) + 1e-6
+        V = interp[:,:n_channels]
+        delta_f = interp[:,n_channels:]
+
+        V_t0 = torch.sigmoid(V) + 1e-6
         V_t1 = 1 - V_t0
 
         normalization = (1-t) * V_t0 + t * V_t1
 
-        delta_f_t0 = interp[:, 2:2*n_channels+2] # interp[:, 2:4]
-        delta_f_t1 = interp[:, 2*n_channels+2:4*n_channels+2]
+        delta_f_t0 = delta_f[:,:2*n_channels]
+        delta_f_t1 = delta_f[:,2*n_channels:]
 
         I_t = []
         for c in range(self.n_channels):
@@ -153,10 +156,13 @@ class SloMoInterpNetMV(nn.Module):
             delta_f_t0_c = delta_f_t0[:, c*2:(c+1)*2]
             delta_f_t1_c = delta_f_t1[:, c*2:(c+1)*2]
 
+            V_t0_c =V_t0[:,c].unsqueeze(1)
+            V_t1_c =V_t1[:,c].unsqueeze(1)
+
             g_0_ft_0_c = self.warper(I0[:,c].unsqueeze(1), f_t0[c] + delta_f_t0_c)
             g_1_ft_1_c = self.warper(I1[:,c].unsqueeze(1), f_t1[c] + delta_f_t1_c)
-            I_t_c = (1-t) * V_t0* g_0_ft_0_c + t * V_t1* g_1_ft_1_c
-            I_t_c /= normalization
+            I_t_c = (1-t) * V_t0_c * g_0_ft_0_c + t * V_t1_c* g_1_ft_1_c
+            I_t_c /= normalization[:,c].unsqueeze(1)
             I_t.append(I_t_c)
 
         I_t = torch.cat(I_t, 1)
