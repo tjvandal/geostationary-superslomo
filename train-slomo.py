@@ -12,32 +12,32 @@ import torchvision
 from tensorboardX import SummaryWriter
 
 # from flownet import FlowWarper, SloMoFlowNetMV, SloMoInterpNetMV
-import slomo.flownet2 as fl
+#import slomo.flownet2 as fl
+import slomo.flownet as fl
 from slomo import unet
 from data import goes16s3
 import tools.eval_utils
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--gpu", default="0", type=str)
+parser.add_argument("--gpus", default="0", type=str)
 parser.add_argument("--multivariate", dest='multivariate', action='store_true')
 parser.add_argument("--channel", default=None, type=int)
 parser.add_argument("--epochs", default=5, type=int)
 parser.set_defaults(multivariate=False)
 args = parser.parse_args()
 
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
 
 EPOCHS = args.epochs
 LEARNING_RATE = 1e-4
-BATCH_SIZE = 20
-
+BATCH_SIZE = 200 * torch.cuda.device_count()
 
 torch.manual_seed(0)
 
 
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
-              example_directory='/raid/tj/GOES/SloMo-5min-band123',
+              example_directory='/nobackupp10/tvandal/GOES-SloMo/data/9Min-3Channels-Train-pt/',
               epochs=20,
               batch_size=1,
               lr=1e-4,
@@ -47,16 +47,23 @@ def train_net(n_channels=3,
 
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
     if multivariate:
         flownet_filename = os.path.join(model_path, 'checkpoint.flownet.mv.pth.tar')
-        flownet = fl.SloMoFlowNetMV(n_channels)#.cuda()
-        interpnet = fl.SloMoInterpNetMV(n_channels)#.cuda()
+        flownet = fl.SloMoFlowNetMV(n_channels)
+        interpnet = fl.SloMoInterpNetMV(n_channels)
     else:
         flownet_filename = os.path.join(model_path, 'checkpoint.flownet.pth.tar')
-        flownet = fl.SloMoFlowNet(n_channels)#.cuda()
-        interpnet = fl.SloMoInterpNet(n_channels)#.cuda()
+        flownet = fl.SloMoFlowNet(n_channels)
+        interpnet = fl.SloMoInterpNet(n_channels)
 
-    warper = fl.FlowWarper()#.cuda()
+    warper = fl.FlowWarper()
+
+    #if torch.cuda.device_count() > 1:
+    print("Let's use {} GPUS:!".format(torch.cuda.device_count()))
+    flownet = nn.DataParallel(flownet)
+    interpnet = nn.DataParallel(interpnet)
+    warper = nn.DataParallel(warper)
 
     flownet = flownet.to(device)
     interpnet = interpnet.to(device)
@@ -67,13 +74,15 @@ def train_net(n_channels=3,
 
 
     data_params = {'batch_size': batch_size, 'shuffle': True,
-                   'num_workers': 8, 'pin_memory': True}
+                   'num_workers': 20, 'pin_memory': True}
 
+    print("example_directory: {}".format(example_directory))
     dataset = goes16s3.GOESDataset(example_directory=example_directory,
                                         n_upsample=9,
                                         n_overlap=3)
     train_size = int(len(dataset)*0.9)
     val_size = len(dataset) - train_size
+    print("train_size: {}, val size: {}".format(train_size, val_size))
     training_set, val_set= torch.utils.data.random_split(dataset, [train_size, val_size])
     training_generator = data.DataLoader(training_set, **data_params)
     val_generator = data.DataLoader(val_set, **data_params)
@@ -85,7 +94,6 @@ def train_net(n_channels=3,
                                  lr=lr)
     recon_l1_loss = nn.L1Loss()
     recon_l2_loss = nn.MSELoss()
-
 
     def load_checkpoint(flownet, interpnet, optimizer, filename):
         start_epoch = 0
@@ -114,7 +122,6 @@ def train_net(n_channels=3,
     for epoch in range(start_epoch+1, EPOCHS+1):
         print("\nEpoch {}/{}".format(epoch, EPOCHS))
         print("-"*10)
-        t0 = time.time()
 
         for phase in ['train', 'val']:
             if phase == 'train':
@@ -125,10 +132,16 @@ def train_net(n_channels=3,
                 interpnet.train(False)
 
             running_loss = 0.0
-            for I0, I1, IT in data_loaders[phase]:
-                if I0.shape[1] != n_channels: print('N channels dont match with array shape'); continue
+            t0 = time.time()
+            for batch_idx, (sample, t_sample) in enumerate(data_loaders[phase]):
+                t_sample = t_sample.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(device).float()
+                if sample.shape[1] != n_channels: print('N channels dont match with array shape'); continue
 
-                I0, I1, IT = I0.to(device), I1.to(device), IT.to(device, non_blocking=True)
+                #I0, I1, IT = I0.to(device), I1.to(device), IT.to(device, non_blocking=True)
+                sample = sample.to(device)
+                I0 = sample[:,0]
+                IT = sample[:,1]
+                I1 = sample[:,2]
 
                 f = flownet(I0, I1)  # optical flows per channel
                 # x, y optical flows
@@ -139,31 +152,20 @@ def train_net(n_channels=3,
                     f_01 = f[:,:2]
                     f_10 = f[:,2:]
 
+
                 # collect loss data and predictions
                 loss_vector = []
                 warping_loss_collector = []
                 image_collector = []
 
-                T = IT.shape[1]
-                for i in range(1,T+1):
-                    t = 1. * i / (T+1)
+                f_01 * t_sample
+                I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(I0, I1, f_01, f_10,
+                                                                            t_sample)
+                # reconstruction loss
+                loss_reconstruction = recon_l1_loss(I_t, IT)
 
-                    # Input Channels: predicted image and warped without derivatives
-                    I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(I0, I1, f_01, f_10, t)
-                    image_collector.append(I_t)
-
-                    # reconstruction loss
-                    loss_recon = recon_l1_loss(I_t, IT[:, i-1])
-                    loss_vector.append(loss_recon)
-
-                    # warping loss
-                    loss_warp_i= recon_l1_loss(I_t, g0) \
-                                + recon_l1_loss(I_t, g1)
-
-                    warping_loss_collector.append(loss_warp_i)
-
-                # compute the reconstruction loss
-                loss_reconstruction = sum(loss_vector)  / T
+                # warping loss
+                loss_warp = recon_l1_loss(I_t, g0) + recon_l1_loss(I_t, g1)
 
                 # compute the total warping loss
                 I_hat_0, I_hat_1 = [], []
@@ -172,16 +174,15 @@ def train_net(n_channels=3,
                     for c in range(n_channels):
                         I_0_warp.append(warper(I1[:,c].unsqueeze(1), f_10[:,c*2:(c+1)*2]))
                         I_1_warp.append(warper(I0[:,c].unsqueeze(1), f_01[:,c*2:(c+1)*2]))
+
                     I_0_warp = torch.cat(I_0_warp,  1)
                     I_1_warp = torch.cat(I_1_warp,  1)
                 else:
                     I_0_warp = warper(I1, f_10)
                     I_1_warp = warper(I0, f_01)
 
-
-                loss_warp = recon_l1_loss(I0, I_0_warp) +\
+                loss_warp += recon_l1_loss(I0, I_0_warp) +\
                             recon_l1_loss(I1, I_1_warp)
-                loss_warp += sum(warping_loss_collector)/T
 
                 # compute the smoothness loss
                 loss_smooth_1_0 = torch.mean(torch.abs(f_10[:,:,:,:-1] - f_10[:,:,:,1:])) +\
@@ -199,24 +200,21 @@ def train_net(n_channels=3,
                 optimizer.step()
 
                 running_loss += loss.item()
-                if step % 100 == 0:
+                if batch_idx % 50 == 0:
                     losses = [loss_reconstruction.item(), loss_warp.item(), loss.item()]
                     tfwriter.add_scalar('train/losses/recon', loss_reconstruction, step)
                     tfwriter.add_scalar('train/losses/warp', loss_warp, step)
                     tfwriter.add_scalar('train/losses/smooth', loss_smooth, step)
                     tfwriter.add_scalar('train/total_loss', loss, step)
-                    '''
-                    if np.isnan(losses[-1]):
-                        print("nan loss")
-                        train_net(n_channels=n_channels,
-                                  model_path=model_path,
-                                  example_directory=example_directory,
-                                  epochs=epochs,
-                                  batch_size=batch_size,
-                                  lr=lr,
-                                  multivariate=multivariate)
-                    '''
-
+                    examples_per_second = batch_idx * batch_size / (time.time() - t0)
+                    if phase == 'train':
+                        ssize = train_size
+                    else:
+                        ssize = val_size
+                    print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tExamples/Second: {:.0f}'.
+                                format(phase.upper(), epoch, batch_idx * batch_size,
+                                       ssize, 100 * batch_size * batch_idx / ssize,
+                                       loss.item(), examples_per_second))
                 step += 1
 
             state = {'epoch': epoch, 'flownet_state_dict': flownet.state_dict(),
@@ -235,11 +233,9 @@ def train_net(n_channels=3,
             print('[{}] Loss: {:.6f}, Examples per second: {:6f}'.format(phase, epoch_loss,
                                                                          example_per_second))
 
-
-
 def run_experiments(multivariate):
-    example_directory = '/raid/tj/GOES/SloMo/9Min-%iChannels-Train'
-    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE) 
+    example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
+    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE)
     #lambda_ws = [0.01, 0.1, 0.5, 1.0]
     #lambda_ws = [0.01, 0.1, 0.5, 1.0]
     lambda_ws = [0.1,]
@@ -266,6 +262,7 @@ def run_experiments(multivariate):
                           multivariate=multivariate,
                           lambda_w=w,
                           lambda_s=s)
+
 
 if __name__ == "__main__":
     run_experiments(args.multivariate)

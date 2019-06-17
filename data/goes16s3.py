@@ -9,7 +9,6 @@ import time
 import shutil
 
 import boto
-#import boto3
 import botocore
 import xarray as xr
 import numpy as np
@@ -106,9 +105,16 @@ class NOAAGOESS3(object):
         self.bucket_name = 'noaa-goes16'
         self.product = product
         self.channels = channels
-        self.conn = boto.connect_s3(host='s3.amazonaws.com')
-        self.goes_bucket = self.conn.get_bucket(self.bucket_name)
         self.save_directory = os.path.join(save_directory, product)
+        try:
+            self._connect_to_s3()
+        except:
+            pass
+
+    def _connect_to_s3(self):
+        config = botocore.client.Config(connect_timeout=5, retries={'max_attempts': 0})
+        self.conn = boto.connect_s3(host='s3.amazonaws.com', config=config)
+        self.goes_bucket = self.conn.get_bucket(self.bucket_name)
 
     def year_day_pairs(self):
         '''
@@ -212,8 +218,11 @@ class NOAAGOESS3(object):
         if year is not None:
             base_dir = os.path.join(base_dir, '%04i' % year)
             if dayofyear is not None:
-                base_dir = os.path.join(base_dir, '%03i' % dayofyear)            
+                base_dir = os.path.join(base_dir, '%03i' % dayofyear)
+
         #for f in os.listdir(self.save_directory):
+        if not os.path.exists(base_dir):
+            return pd.DataFrame()
         for directory, folders, files in os.walk(base_dir):
             for f in files:
                 if f[-3:] == '.nc':
@@ -242,12 +251,13 @@ class NOAAGOESS3(object):
                 if hour not in hours:
                     running_samples = []
                     continue
-                
+
                 files = row['file'][self.channels]
                 try:
                     da = _open_and_merge_2km(files.values, normalize=normalize)
                     running_samples.append(da)
-                except ValueError:
+                except ValueError as err:
+                    print("Error: {}".format(err))
                     running_samples = []
                     continue
 
@@ -265,17 +275,40 @@ class NOAAGOESS3(object):
                     while len(running_samples) > min_queue_size:
                         running_samples.pop(0)
 
+    def write_pytorch_examples(self, example_directory, year, day, force=False,
+                             patch_width=128+6):
+        counter = 0
+        #if (self._check_directory(year, day)) and (not force):  return
+        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
+        #           overlap by 5 minutes
+        data_iterator = self.iterate_day(year, day, max_queue_size=12,
+                                         min_queue_size=1)
+
+        for data in data_iterator:
+            blocked_data = utils.blocks(data, width=patch_width)
+            for b in blocked_data:
+                if np.all(np.isfinite(b)):
+                    fname = "%04i_%03i_%07i.npy" % (year, day, counter)
+                    save_file = os.path.join(example_directory, fname)
+                    print("saved file: %s" % save_file)
+                    np.save(save_file, b)
+                    counter += 1
+                else:
+                    pass
+
+
 
 ## SloMo Training Dataset on NOAA GOES S3 data
 class GOESDataset(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
-                 n_upsample=15, n_overlap=5):
+                 n_upsample=15, n_overlap=5, train=True):
         self.example_directory = example_directory
         if not os.path.exists(self.example_directory):
             os.makedirs(self.example_directory)
         self._example_files()
         self.n_upsample = n_upsample
         self.n_overlap = n_overlap
+        self.train = train
 
     def _example_files(self):
         self.example_files = [os.path.join(self.example_directory, f) for f in
@@ -287,28 +320,6 @@ class GOESDataset(Dataset):
         if len(list(yeardayfiles)) > 0:
             return True
         return False
-
-    def write_example_blocks(self, year, day, channels=range(1,17), force=False,
-                             patch_width=128+6):
-        counter = 0
-        if (self._check_directory(year, day)) and (not force):  return
-        goes = NOAAGOESS3(channels=channels)
-        # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
-        #           overlap by 5 minutes
-        data_iterator = goes.iterate_day(year, day, max_queue_size=12, min_queue_size=1)
-
-        for data in data_iterator:
-            blocked_data = utils.blocks(data, width=patch_width)
-            for b in blocked_data:
-                if np.all(np.isfinite(b)):
-                    fname = "%04i_%03i_%07i.npy" % (year, day, counter)
-                    save_file = os.path.join(self.example_directory, fname)
-                    print("saved file: %s" % save_file)
-                    np.save(save_file, b)
-                    counter += 1
-                else:
-                    pass
-        self._example_files()
 
     def transform(self, block):
         n_select = self.n_upsample + 1
@@ -343,17 +354,21 @@ class GOESDataset(Dataset):
         f = self.example_files[idx]
         try:
             block = np.load(f)
-            block = self.transform(block)
+            if self.train:
+                block = self.transform(block)
+            return_index = np.random.choice(range(1, self.n_upsample-1))
             I0 = torch.from_numpy(block[0])
             I1 = torch.from_numpy(block[-1])
-            IT = torch.from_numpy(block[1:-1])
+            IT = torch.from_numpy(block[return_index])
+            sample = torch.stack([I0, IT, I1], dim=0)
         except Exception as err:
             os.remove(f)
             del self.example_files[idx]
             self.N_files -= 1
             raise TypeError("Cannot load file: {}".formate(f))
 
-        return I0, I1, IT
+        return sample, (return_index / (1.*self.n_upsample))
+
 
 ### Work in progress
 class Nowcast(Dataset):
@@ -483,23 +498,6 @@ def download_data(test=False, n_jobs=1):
 
 
 
-
-def training_set(directory='./'):
-    years = [2017, 2018]
-    for n_channels in [3,8]:
-        example_directory = os.path.join(directory, '9Min-%iChannels-Train-pt' % n_channels)
-        goespytorch = GOESDataset(example_directory=example_directory)
-        jobs = []
-        for year in years:
-            for day in np.arange(1,365):
-                print('Year: {}, Day: {}'.format(year, day))
-                jobs.append(delayed(goespytorch.write_example_blocks)(year, day,
-                                     channels=range(1,n_channels+1),
-                                     force=False))
-        cpu_count = 6
-
-        Parallel(n_jobs=cpu_count)(jobs)
-
 def download_conus_data():
     for n_channels in [3,]:
         noaa = NOAAGOESS3(product='ABI-L1b-RadC', channels=range(1,n_channels+1))
@@ -509,9 +507,8 @@ def download_conus_data():
 
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
-    download_data(n_jobs=4)
-    download_data(test=True, j_jobs=4)
-
+    #download_data(n_jobs=4)
+    download_data(test=True, n_jobs=6)
     #training_set()
     #test_set()
     #download_conus_data()

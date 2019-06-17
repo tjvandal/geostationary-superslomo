@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import torchvision
-import unet
+from . import unet
 
 class FlowWarper(nn.Module):
     def __init__(self):
