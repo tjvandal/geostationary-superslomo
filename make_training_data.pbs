@@ -1,0 +1,18 @@
+#PBS -S /bin/bash
+#PBS -l site=needed=/home1+/nex+/nobackupp10
+#PBS -l select=1:ncpus=1:model=sky_ele,walltime=8:00:00
+#PBS -j eo
+#PBS -m e
+#PBS -N opticalflow_training_data 
+#PBS -W group_list=s1007
+#PBS -q normal 
+
+module purge
+module load mpi-sgi/mpt
+source activate geolib_env
+source ~/.bashrc
+conda activate slomo
+
+
+## fullDisk process used 2.1 hours with 20 nodes 400 cores for 1 month
+python make_training_data.py

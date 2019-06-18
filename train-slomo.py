@@ -19,7 +19,7 @@ from data import goes16s3
 import tools.eval_utils
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--gpus", default="0", type=str)
+parser.add_argument("--gpus", default="0,1,2,3", type=str)
 parser.add_argument("--multivariate", dest='multivariate', action='store_true')
 parser.add_argument("--channel", default=None, type=int)
 parser.add_argument("--epochs", default=5, type=int)
@@ -30,14 +30,14 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
 
 EPOCHS = args.epochs
 LEARNING_RATE = 1e-4
-BATCH_SIZE = 200 * torch.cuda.device_count()
+BATCH_SIZE = 100# * torch.cuda.device_count()
 
 torch.manual_seed(0)
 
 
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
-              example_directory='/nobackupp10/tvandal/GOES-SloMo/data/9Min-3Channels-Train-pt/',
+              example_directory='/nobackupp10/tvandal/GOES-SloMo/data/9Min-3Channels/',
               epochs=20,
               batch_size=1,
               lr=1e-4,
@@ -59,11 +59,11 @@ def train_net(n_channels=3,
 
     warper = fl.FlowWarper()
 
-    #if torch.cuda.device_count() > 1:
-    print("Let's use {} GPUS:!".format(torch.cuda.device_count()))
-    flownet = nn.DataParallel(flownet)
-    interpnet = nn.DataParallel(interpnet)
-    warper = nn.DataParallel(warper)
+    if torch.cuda.device_count() > 0:
+        print("Let's use {} GPUS!".format(torch.cuda.device_count()))
+        flownet = nn.DataParallel(flownet)
+        interpnet = nn.DataParallel(interpnet)
+        warper = nn.DataParallel(warper)
 
     flownet = flownet.to(device)
     interpnet = interpnet.to(device)
@@ -263,6 +263,26 @@ def run_experiments(multivariate):
                           lambda_w=w,
                           lambda_s=s)
 
+def test_experiment(multivariate):
+    example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
+    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE)
+    if multivariate:
+        model_directory += '_MV2'
+
+    s = 0.1
+    w = 0.1
+    c = 3
+
+    data = example_directory % c
+    train_net(model_path=model_directory % (c, w, s),
+              lr=LEARNING_RATE,
+              batch_size=BATCH_SIZE,
+              n_channels=c,
+              example_directory=data,
+              epochs=EPOCHS,
+              multivariate=multivariate,
+              lambda_w=w,
+              lambda_s=s)
 
 if __name__ == "__main__":
-    run_experiments(args.multivariate)
+    test_experiment(False)
