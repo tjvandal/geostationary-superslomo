@@ -18,22 +18,6 @@ from slomo import unet
 from data import goes16s3
 import tools.eval_utils
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--gpus", default="0,1,2,3", type=str)
-parser.add_argument("--multivariate", dest='multivariate', action='store_true')
-parser.add_argument("--channel", default=None, type=int)
-parser.add_argument("--epochs", default=5, type=int)
-parser.set_defaults(multivariate=False)
-args = parser.parse_args()
-
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
-
-EPOCHS = args.epochs
-LEARNING_RATE = 1e-4
-BATCH_SIZE = 100# * torch.cuda.device_count()
-
-torch.manual_seed(0)
-
 
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
@@ -42,8 +26,8 @@ def train_net(n_channels=3,
               batch_size=1,
               lr=1e-4,
               multivariate=True,
-              lambda_w=0.0,
-              lambda_s=0.0):
+              lambda_w=1.,
+              lambda_s=1.):
 
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -115,12 +99,12 @@ def train_net(n_channels=3,
     flownet, interpnet, optimizer, start_epoch = load_checkpoint(flownet, interpnet, optimizer,
                                                                  filename=flownet_filename)
 
-    step = int(start_epoch * data_lengths['train'] / BATCH_SIZE)
+    step = int(start_epoch * data_lengths['train'] / args.batch_size)
     tfwriter = SummaryWriter(os.path.join(model_path, 'tfsummary'))
     print("Begin Training at epoch {}".format(start_epoch))
     best_validation_loss = 1e10
-    for epoch in range(start_epoch+1, EPOCHS+1):
-        print("\nEpoch {}/{}".format(epoch, EPOCHS))
+    for epoch in range(start_epoch+1, epochs +1):
+        print("\nEpoch {}/{}".format(epoch, epochs))
         print("-"*10)
 
         for phase in ['train', 'val']:
@@ -233,56 +217,44 @@ def train_net(n_channels=3,
             print('[{}] Loss: {:.6f}, Examples per second: {:6f}'.format(phase, epoch_loss,
                                                                          example_per_second))
 
-def run_experiments(multivariate):
+def test_experiment(args):
     example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
-    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE)
-    #lambda_ws = [0.01, 0.1, 0.5, 1.0]
-    #lambda_ws = [0.01, 0.1, 0.5, 1.0]
-    lambda_ws = [0.1,]
-    lambda_ss = [0.1,]
-    if multivariate:
-        model_directory += '_MV2'
+    model_directory = 'saved-models/tests/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(args.batch_size)
+    if args.multivariate:
+        model_directory += '_MV'
 
-    for c in [3,8]:
-        for w in lambda_ws:
-            for s in lambda_ss:
-                if (args.channel is not None) and (args.channel != c):
-                    continue
+    s = args.lambda_s
+    w = args.lambda_w
+    c = args.n_channels
 
-                if multivariate and (c == 1):
-                    continue
-
-                data = example_directory % c
-                train_net(model_path=model_directory % (c, w, s),
-                          lr=LEARNING_RATE,
-                          batch_size=BATCH_SIZE,
-                          n_channels=c,
-                          example_directory=data,
-                          epochs=EPOCHS,
-                          multivariate=multivariate,
-                          lambda_w=w,
-                          lambda_s=s)
-
-def test_experiment(multivariate):
-    example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
-    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE)
-    if multivariate:
-        model_directory += '_MV2'
-
-    s = 0.1
-    w = 0.1
-    c = 3
-
-    data = example_directory % c
     train_net(model_path=model_directory % (c, w, s),
-              lr=LEARNING_RATE,
-              batch_size=BATCH_SIZE,
+              lr=args.learning_rate,
+              batch_size=args.batch_size,
               n_channels=c,
-              example_directory=data,
-              epochs=EPOCHS,
-              multivariate=multivariate,
-              lambda_w=w,
-              lambda_s=s)
+              example_directory=example_directory % c,
+              epochs=args.epochs,
+              multivariate=args.multivariate,
+              lambda_w=args.lambda_w,
+              lambda_s=args.lambda_s)
 
 if __name__ == "__main__":
-    test_experiment(False)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gpus", default="0,1,2,3", type=str)
+    parser.add_argument("--multivariate", dest='multivariate', action='store_true')
+    parser.add_argument("--n_channels", default=3, type=int)
+    parser.add_argument("--epochs", default=5, type=int)
+    parser.add_argument("--batch_size", default=32, type=int)
+    parser.add_argument("--learning_rate", default=1e-4, type=float)
+    parser.add_argument("--lambda_s", default=1e-1, type=float)
+    parser.add_argument("--lambda_w", default=1e-1, type=float)
+    parser.set_defaults(multivariate=False)
+    args = parser.parse_args()
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
+
+    BATCH_SIZE = args.batch_size
+
+    torch.manual_seed(0)
+
+
+    test_experiment(args)
