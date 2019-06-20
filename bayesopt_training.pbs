@@ -1,0 +1,14 @@
+#PBS -S /bin/bash
+#PBS -l site=needed=/home1+/nex+/nobackupp10
+#PBS -l select=1:ncpus=1:model=sky_gpu,walltime=2:00:00
+#PBS -j eo
+#PBS -m e
+#PBS -N bayesopt_training
+#PBS -W group_list=s1007
+#PBS -q alphatst
+
+module purge
+source ~/.bashrc
+conda activate slomo
+
+python bayesopt_training.py --epochs 1 --total_trials 20 --experiment_name 20trials-1epoch > bayesopt_training.log

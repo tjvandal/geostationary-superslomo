@@ -34,10 +34,10 @@ class SloMoFlowNet(nn.Module):
         I0 and I1 are model inputs
         Flow computation predicts forward and backward optical flows
     '''
-    def __init__(self, n_channels=6):
+    def __init__(self, n_channels=6, model=unet.UNetSmall):
         super(SloMoFlowNet, self).__init__()
         self.n_channels = n_channels
-        self.flow_model  = unet.UNet(self.n_channels*2, 4)
+        self.flow_model  = model(self.n_channels*2, 4)
 
     def forward(self, x0, x1):
         x = torch.cat([x0, x1], dim=1)
@@ -45,11 +45,11 @@ class SloMoFlowNet(nn.Module):
         return f
 
 class SloMoInterpNet(nn.Module):
-    def __init__(self, n_channels):
+    def __init__(self, n_channels, model=unet.UNetSmall):
         super(SloMoInterpNet, self).__init__()
         #self.device = device
         self.warper = FlowWarper()
-        self.unet = unet.UNet(n_channels*4 + 4, 6)
+        self.model = model(n_channels*4 + 4, 6)
 
     def forward(self, I0, I1, F0, F1, t):
         assert F0.shape[1] == 2
@@ -68,7 +68,7 @@ class SloMoInterpNet(nn.Module):
         # V_t_0, V_t_1: 1 channel each
         # delta_f_t0, delta_f_t1: 2 channels each
         # I0, I1: 3 channels each
-        interp = self.unet(x_flow)
+        interp = self.model(x_flow)
         V_t0 = torch.sigmoid(torch.unsqueeze(interp[:,0], 1)) + 1e-6
         V_t1 = 1 - V_t0
         delta_f_t0 = interp[:, 2:4]
@@ -88,10 +88,10 @@ class SloMoFlowNetMV(nn.Module):
         I0 and I1 are model inputs
         Flow computation predicts forward and backward optical flows
     '''
-    def __init__(self, n_channels=6):
+    def __init__(self, n_channels=6, model=unet.UNetSmall):
         super(SloMoFlowNetMV, self).__init__()
         self.n_channels = n_channels
-        self.flow_model  = unet.UNet(self.n_channels*2, self.n_channels*4)
+        self.flow_model  = model(self.n_channels*2, self.n_channels*4)
 
     def forward(self, x0, x1):
         x = torch.cat([x0, x1], dim=1)
@@ -99,12 +99,11 @@ class SloMoFlowNetMV(nn.Module):
         return f
 
 class SloMoInterpNetMV(nn.Module):
-    def __init__(self, n_channels):
+    def __init__(self, n_channels, model=unet.UNetSmall):
         super(SloMoInterpNetMV, self).__init__()
         #self.device = device
         self.warper = FlowWarper()
-        #self.unet = unet.UNet(n_channels*4 + 4, 6)
-        self.unet = unet.UNet(n_channels*4 + n_channels*4, n_channels + 4*n_channels)
+        self.model = model(n_channels*4 + n_channels*4, n_channels + 4*n_channels)
         self.n_channels = n_channels
 
     def forward(self, I0, I1, F0, F1, t):
@@ -138,7 +137,7 @@ class SloMoInterpNetMV(nn.Module):
         # V_t_0, V_t_1: n_channel each
         # delta_f_t0, delta_f_t1: 2 * n_channels each
         # I0, I1: 3 channels each
-        interp = self.unet(x_flow)
+        interp = self.model(x_flow)
         V = interp[:,:n_channels]
         delta_f = interp[:,n_channels:]
 

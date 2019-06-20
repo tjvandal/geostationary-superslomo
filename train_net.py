@@ -99,12 +99,13 @@ def train_net(n_channels=3,
     flownet, interpnet, optimizer, start_epoch = load_checkpoint(flownet, interpnet, optimizer,
                                                                  filename=flownet_filename)
 
-    step = int(start_epoch * data_lengths['train'] / args.batch_size)
+    step = int(start_epoch * data_lengths['train'] / batch_size)
     tfwriter = SummaryWriter(os.path.join(model_path, 'tfsummary'))
+
     print("Begin Training at epoch {}".format(start_epoch))
     best_validation_loss = 1e10
     for epoch in range(start_epoch+1, epochs +1):
-        print("\nEpoch {}/{}".format(epoch, epochs))
+        print("Epoch {}/{}".format(epoch, epochs))
         print("-"*10)
 
         for phase in ['train', 'val']:
@@ -184,7 +185,7 @@ def train_net(n_channels=3,
                 optimizer.step()
 
                 running_loss += loss.item()
-                if batch_idx % 50 == 0:
+                if batch_idx % 100 == 0:
                     losses = [loss_reconstruction.item(), loss_warp.item(), loss.item()]
                     tfwriter.add_scalar('train/losses/recon', loss_reconstruction, step)
                     tfwriter.add_scalar('train/losses/warp', loss_warp, step)
@@ -195,8 +196,8 @@ def train_net(n_channels=3,
                         ssize = train_size
                     else:
                         ssize = val_size
-                    print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tExamples/Second: {:.0f}'.
-                                format(phase.upper(), epoch, batch_idx * batch_size,
+                    print('[{}] Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tExamples/Second: {:.0f}'.
+                                format(phase, epoch, batch_idx * batch_size,
                                        ssize, 100 * batch_size * batch_idx / ssize,
                                        loss.item(), examples_per_second))
                 step += 1
@@ -205,7 +206,7 @@ def train_net(n_channels=3,
                      'optimizer': optimizer.state_dict(),
                      'interpnet_state_dict': interpnet.state_dict()}
 
-            epoch_loss = running_loss / data_lengths[phase]
+            epoch_loss = running_loss * batch_size / data_lengths[phase]
             torch.save(state, flownet_filename)
             if (phase == 'val') and (epoch_loss < best_validation_loss):
                 filename = os.path.join(model_path, 'best.flownet.pth.tar')
@@ -216,6 +217,7 @@ def train_net(n_channels=3,
             example_per_second = 1./t
             print('[{}] Loss: {:.6f}, Examples per second: {:6f}'.format(phase, epoch_loss,
                                                                          example_per_second))
+    return best_validation_loss
 
 def test_experiment(args):
     example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
