@@ -1,7 +1,17 @@
 # GOES-SlowMo
 
-## Notes
+Depends on NOAA AWS S3 ABI data.  Trains and tests on mesoscale, inference on CONUS and full disk.
 
-AWS HPC using MPI
+## Download data and/or read from NAS
 
-https://d1.awsstatic.com/Projects/P4114756/deploy-elastic-hpc-cluster_project.pdf
+
+## Make training patches (years 2017, 2018)
+
+
+## Perform Bayesian Optimization to find Hyper-parameters
+
+
+## Train final models for experiments
+
+
+## Run inference on test set (year 2019)
