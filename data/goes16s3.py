@@ -49,8 +49,8 @@ def _open_and_merge_2km(files, normalize=True):
         and interpolations to 2km.
     Return:
         xarray.DataArray (band: len(files), x, y)
-        
-    https://www.star.nesdis.noaa.gov/goesr/docs/ATBD/Imagery.pdf    
+
+    https://www.star.nesdis.noaa.gov/goesr/docs/ATBD/Imagery.pdf
     '''
     norm_factors = {1: (-26, 805), 2: (-20, 628), 3: (-12, 373),
                     4: (-4, 140), 5: (-3, 94), 6: (-1, 30), 7: (0, 25),
@@ -72,7 +72,7 @@ def _open_and_merge_2km(files, normalize=True):
             #mn = ds['min_radiance_value_of_valid_pixels'].values
             #mx = ds['max_radiance_value_of_valid_pixels'].values
             ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
-            
+
         #ds['Rad'] *= 1e-3
         # regrid to 2km to match all bands
         newrad = regrid_2km(ds['Rad'], band_id)
@@ -98,18 +98,23 @@ def _open_and_merge_2km(files, normalize=True):
     das = xr.concat(das, 'band')
     return das
 
+## Interact with NOAA GOES ABI dataset via S3 and local paths
+
+
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
     def __init__(self, product='ABI-L1b-RadM', channels=range(1,17),
-                       save_directory='/nobackupp10/tvandal/data/goes16'):
+                       save_directory='/nobackupp10/tvandal/data/goes16',
+                       skip_connection=False):
         self.bucket_name = 'noaa-goes16'
         self.product = product
         self.channels = channels
         self.save_directory = os.path.join(save_directory, product)
-        try:
-            self._connect_to_s3()
-        except:
-            pass
+        if not skip_connection:
+            try:
+                self._connect_to_s3()
+            except:
+                pass
 
     def _connect_to_s3(self):
         config = botocore.client.Config(connect_timeout=5, retries={'max_attempts': 0})
@@ -296,6 +301,20 @@ class NOAAGOESS3(object):
                 else:
                     pass
 
+    def load_snapshots(self, year, dayofyear, hour, minute, minute_delta):
+        filelist_file = 'localfilelist_{}_{}_{}.pkl'.format(self.product, year, dayofyear)
+        if os.path.exists(filelist_file):
+            files = pd.read_pickle(filelist_file)
+        else:
+            files = self.local_files(year=year, dayofyear=dayofyear)
+            files.to_pickle(filelist_file)
+        channel_idxs = [c-1 for c in self.channels]
+        I0files = files.loc[year, dayofyear, hour, minute].values[0,channel_idxs]
+        I1files = files.loc[year, dayofyear, hour, minute+minute_delta].values[0,channel_idxs]
+
+        I0 = _open_and_merge_2km(I0files)
+        I1 = _open_and_merge_2km(I1files)
+        return I0, I1
 
 
 ## SloMo Training Dataset on NOAA GOES S3 data
@@ -365,121 +384,10 @@ class GOESDataset(Dataset):
             os.remove(f)
             del self.example_files[idx]
             self.N_files -= 1
-            raise TypeError("Cannot load file: {}".formate(f))
+            raise TypeError("Cannot load file: {}".format(f))
 
         return sample, (return_index / (1.*self.n_upsample))
 
-
-### Work in progress
-class Nowcast(Dataset):
-    def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
-                 n_overlap=3):
-        self.example_directory = example_directory
-        if not os.path.exists(self.example_directory):
-            os.makedirs(self.example_directory)
-
-        self._example_files()
-        self.n_upsample = n_upsample
-        self.n_overlap = n_overlap
-
-    def _example_files(self):
-        self.example_files = [os.path.join(self.example_directory, f) for f in
-                              os.listdir(self.example_directory) if 'npy' == f[-3:]]
-        self.N_files = len(self.example_files)
-
-    def _check_directory(self, year, day):
-        yeardayfiles = [f for f in self.example_files if '%4i_%03i' % (year, day) in f]
-        if len(list(yeardayfiles)) > 0:
-            return True
-        return False
-
-    def write_example_blocks(self, year, day, channels=range(1,17), force=False):
-        counter = 0
-        goes = NOAAGOESS3(channels=channels)
-        if (self._check_directory(year, day)) and (not force):  return
-
-        for data in goes.iterator_day(year, day):
-            blocked_data = utils.blocks(data, width=360)
-
-            # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
-            # overlap by 5 minutes
-
-            n = self.n_upsample + self.n_overlap + 1
-            for blocks in blocked_data:
-                idxs = np.arange(0, blocks.shape[0], self.n_upsample)
-                for i in idxs:
-                    if i + n > blocks.shape[0]:
-                        i = blocks.shape[0] - n
-
-                    b = blocks[i:i+n]
-                    if np.all(np.isfinite(b)):
-                        fname = "%04i_%03i_%07i.npy" % (year, day, counter)
-                        save_file = os.path.join(self.example_directory, fname)
-                        print("saved file: %s" % save_file)
-                        np.save(save_file, b)
-                        counter += 1
-                    else:
-                        print("Is not finite")
-
-        self._example_files()
-
-    def transform(self, block):
-        n_select = self.n_upsample + 1
-        # randomly shift temporally
-        i = np.random.choice(range(0,self.n_overlap))
-        block = block[i:n_select+i]
-
-        # randomly shift vertically 
-        i = np.random.choice(range(0,8))
-        block = block[:,:,i:i+352]
-
-        # randomly shift horizontally
-        i = np.random.choice(range(0,8))
-        block = block[:,:,:,i:i+352]
-
-        # randomly flip up-down
-        #if np.random.uniform() > 0.5:
-            #block = block[:,::-1]
-            #block = np.flip(block, axis=1).copy()
-
-        # randomly flip right-left 
-        #if np.random.uniform() > 0.5:
-        #    block = block[:,:,::-1]
-        #    block = np.flip(block, axis=2).copy()
-
-        return block
-
-    def __len__(self):
-        return self.N_files
-
-    def __getitem__(self, idx):
-        f = self.example_files[idx]
-        #obj = self.s3_keys[idx]
-        #key = obj.key
-        #if key is None:
-        #    return self.__getitem__((idx + 1) % self.N_keys)
-
-        #s3 = boto3.resource('s3')
-        #obj = s3.Object(self.bucket_name, key)
-
-        #try:
-        #bio = io.BytesIO(obj.get()['Body'].read())
-        #except botocore.Exceptions.ClientError as ex:
-        #    if obj['Error']['Code'] == 'NoSuchKey':
-        #        return self.__getitem__(idx + 1 % self.N_keys)
-        #    else:
-        #        raise ex
-        try:
-            block = np.load(f)
-        except Exception as err:
-            raise TypeError
-        block = self.transform(block)
-
-        I0 = torch.from_numpy(block[0])
-        I1 = torch.from_numpy(block[-1])
-        IT = torch.from_numpy(block[1:-1])
-
-        return I0, I1, IT
 
 def download_data(test=False, n_jobs=1):
     if test:
@@ -495,8 +403,6 @@ def download_data(test=False, n_jobs=1):
             for day in days:
                 jobs.append(delayed(noaa.download_day)(year, day))
     Parallel(n_jobs=n_jobs)(jobs)
-
-
 
 def download_conus_data():
     for n_channels in [3,]:

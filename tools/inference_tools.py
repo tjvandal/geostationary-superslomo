@@ -1,18 +1,78 @@
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.abspath(os.getcwd())))
 
 import xarray as xr
-import utils
+from .utils import blocks
 import torch
+import torch.nn as nn
 import torchvision
-#from slomo import flownet as fl
-from slomo import flownet2 as fl
+from slomo import flownet as fl
 
 import numpy as np
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+def block_predictions_to_dataarray(predictions, block):
+    block_predictions = np.concatenate(predictions, 0)
+    block_predictions[block_predictions < 0] = 0
+    block_predictions[block_predictions > 1] = 1
+
+    N_pred = block_predictions.shape[0]
+    T = np.arange(0,N_pred)
+    da = xr.DataArray(block_predictions,#[:,:,shave:-shave,shave:-shave],
+              coords=[T, block.band.values,
+                      block.y.values,#[shave:-shave], 
+                      block.x.values,],#][shave:-shave]],
+              dims=['t', 'band', 'y', 'x'])
+
+    return da
+
+def merge_and_average_dataarrays(dataarrays):
+    ds = xr.merge([xr.Dataset({k: d}) for k, d in enumerate(dataarrays)])
+    das = []
+    for b in range(0,len(dataarrays)):
+        das.append(ds[b])
+
+    return xr.concat(das).mean('concat_dims', skipna=True)
+
+# Split 3D numpy array into patches with overlap
+def split_array(arr, tile_size=128, overlap=16):
+    '''
+    Split a 3D numpy array into patches for inference
+    (Channels, Height, Width)
+    Args:
+        tile_size: width and height of patches to return
+        overlap: number of pixels to overlap between patches
+    Returns:
+        dict(patches, upper_left): patches and indices of original array
+    '''
+    arr = arr[np.newaxis]
+    width, height = arr.shape[2:4]
+    arrs = dict(patches=[], upper_left=[])
+    for i in range(0, width, tile_size - overlap):
+        for j in range(0, height, tile_size - overlap):
+            i = min(i, width - tile_size)
+            j = min(j, height - tile_size)
+            arrs['patches'].append(arr[:,:,i:i+tile_size,j:j+tile_size])
+            arrs['upper_left'].append([[i,j]])
+    arrs['patches'] = np.concatenate(arrs['patches'])
+    arrs['upper_left'] = np.concatenate(arrs['upper_left'])
+    return arrs['patches'], arrs['upper_left']
+
+def reassemble_array(arr, upper_left_indices, height, width):
+    assert len(arr.shape) == 4
+    N_patches, channels, pheight, pwidth = arr.shape
+    y_sum = np.zeros((arr.shape[1], height, width))
+    y_counter = np.zeros((arr.shape[1], height, width))
+
+    for n, (i,j)  in enumerate(upper_left_indices):
+        y_counter[:, i:i+pheight, j:j+pwidth] += 1
+        y_sum[:, i:i+pheight, j:j+pwidth] += arr[n]
+
+    y = np.where(y_counter!=0,y_sum/y_counter,0)
+    return y
+
+## Load and return flownet, interpnet, and warper
 def load_models(n_channels, model_path, multivariate=False):
 
     if multivariate:
@@ -25,6 +85,10 @@ def load_models(n_channels, model_path, multivariate=False):
         interpnet = fl.SloMoInterpNet(n_channels)#.cuda()
 
     warper = fl.FlowWarper()
+
+    flownet = nn.DataParallel(flownet)
+    interpnet = nn.DataParallel(interpnet)
+    warper = nn.DataParallel(warper)
 
     flownet = flownet.to(device)
     interpnet = interpnet.to(device)
@@ -49,56 +113,63 @@ def load_models(n_channels, model_path, multivariate=False):
     flownet, interpnet = load_checkpoint(flownet, interpnet)
     return flownet, interpnet, warper
 
-def block_predictions_to_dataarray(predictions, block):
-    block_predictions = np.concatenate(predictions, 0)
-    block_predictions[block_predictions < 0] = 0
-    block_predictions[block_predictions > 1] = 1
+## Perform interpolation for a single timepoint t
 
-    N_pred = block_predictions.shape[0]
-    T = np.arange(0,N_pred)
-    da = xr.DataArray(block_predictions,#[:,:,shave:-shave,shave:-shave],
-              coords=[T, block.band.values,
-                      block.y.values,#[shave:-shave], 
-                      block.x.values,],#][shave:-shave]],
-              dims=['t', 'band', 'y', 'x'])
+def single_inference(X0, X1, t, flownet, interpnet,
+                     multivariate):
+    X0_arr_torch = torch.from_numpy(X0)
+    X1_arr_torch = torch.from_numpy(X1)
 
-    return da
+    # nans to 0
+    X0_arr_torch[np.isnan(X0_arr_torch)] = 0.
+    X1_arr_torch[np.isnan(X1_arr_torch)] = 0.
 
-# this function is nonsensical
-def inference_block(block, flownet, interpnet, warper, multivariate, T=4):
-    block_vals = torch.from_numpy(block.values)
-    block_vals[np.isnan(block_vals)] = 0
-    n_channels = block_vals.shape[1]
-    N = block_vals.shape[0]
-    idxs = np.arange(0, N)
-    preds = []
-    for idx0, idx1 in zip(idxs[:-1], idxs[1:]):
-        idx1 = min(N-1, idx1)
-        I0 = torch.unsqueeze(block_vals[idx0], 0).to(device)
-        I1 = torch.unsqueeze(block_vals[idx1], 0).to(device)
+    if len(X0_arr_torch.shape) == 3:
+        X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0)
+        X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0)
 
-        f = flownet(I0, I1)
-        n_channels = I0.shape[1]
+    X0_arr_torch = X0_arr_torch.to(device)
+    X1_arr_torch = X1_arr_torch.to(device)
 
-        if multivariate:
-            f_01 = f[:,:2*n_channels]
-            f_10 = f[:,2*n_channels:]
-        else:
-            f_01 = f[:,:2]
-            f_10 = f[:,2:]
+    f = flownet(X0_arr_torch, X1_arr_torch)
+    n_channels = X0_arr_torch.shape[1]
 
-        predicted_frames = []
-        for j in range(1,T+1):
-            t = 1. * j / (T+1)
-            I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(I0, I1, f_01, f_10, t)
-            predicted_frames.append(I_t.cpu().detach().numpy())
+    if multivariate:
+        f_01 = f[:,:2*n_channels]
+        f_10 = f[:,2*n_channels:]
+    else:
+        f_01 = f[:,:2]
+        f_10 = f[:,2:]
 
-        preds += [I0.cpu().numpy()] + predicted_frames
-    del f_01, f_10, f, I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1
-    torch.cuda.empty_cache()
-    return block_predictions_to_dataarray(preds, block)
+    I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(X0_arr_torch, X1_arr_torch, f_01, f_10, t)
+    out = {'f_01': f_01, 'f_10': f_10, 'I_t': I_t,
+           'V_t0': V_t0, 'V_t1': V_t1, 'delta_f_t0': delta_f_t0,
+           'delta_f_t1': delta_f_t0}
+    for key in out:
+        out[key] = out[key].cpu().detach().numpy()
 
-def _inference(X0, X1, flownet, interpnet, warper, 
+    #torch.cuda.empty_cache()
+    return out
+
+## Split interpolation for a single timepoint t
+def single_inference_split(X0, X1, t, flownet, interpnet,
+                           multivariate, block_size=128, overlap=16):
+    X0_split, upper_left_idxs = split_array(X0, block_size, overlap)
+    X1_split, _ = split_array(X1, block_size, overlap)
+
+    # perform inference on patches
+    split_res = single_inference(X0_split, X1_split, t, flownet,
+                                 interpnet, multivariate)
+
+    # reassemble into arrays
+    res = dict()
+    for key in split_res:
+        res[key] = reassemble_array(split_res[key], upper_left_idxs,
+                                    X0.shape[1], X0.shape[2])
+    return res
+
+
+def _inference(X0, X1, flownet, interpnet, warper,
                multivariate, T=4, block_size=None):
     '''
     Given two consecutive frames, interpolation T between them 
@@ -106,29 +177,29 @@ def _inference(X0, X1, flownet, interpnet, warper,
     Returns:
         Interpolated Frames
     '''
-    
+
     X0_arr_torch = torch.from_numpy(X0.values)
     X1_arr_torch = torch.from_numpy(X1.values)
 
     # nans to 0
     X0_arr_torch[np.isnan(X0_arr_torch)] = 0.
     X1_arr_torch[np.isnan(X1_arr_torch)] = 0.
-    
+
     X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device)
     X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device)
 
     f = flownet(X0_arr_torch, X1_arr_torch)
     n_channels = X0_arr_torch.shape[1]
-        
+
     if multivariate:
         f_01 = f[:,:2*n_channels]
         f_10 = f[:,2*n_channels:]
     else:
         f_01 = f[:,:2]
         f_10 = f[:,2:]
-        
+
     predicted_frames = []
-    
+
     for j in range(1,T+1):
         t = 1. * j / (T+1)
         I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(X0_arr_torch, X1_arr_torch, f_01, f_10, t)
@@ -137,15 +208,8 @@ def _inference(X0, X1, flownet, interpnet, warper,
     torch.cuda.empty_cache()
     return predicted_frames
 
-def merge_and_average_dataarrays(dataarrays):
-    ds = xr.merge([xr.Dataset({k: d}) for k, d in enumerate(dataarrays)])
-    das = []
-    for b in range(0,len(dataarrays)):
-        das.append(ds[b])
-
-    return xr.concat(das).mean('concat_dims', skipna=True)
-
-def inference(X0, X1, flownet, interpnet, warper, 
+## Perform interpolation over multiple time steps
+def inference(X0, X1, flownet, interpnet, warper,
               multivariate, T=4, block_size=352):
     '''
     Given two consecutive frames, interpolation T between them 
@@ -154,15 +218,14 @@ def inference(X0, X1, flownet, interpnet, warper,
         Interpolated Frames
     '''
     # Get a list of dataarrays chunked
-    X0_blocks = utils.blocks(X0, width=block_size)
-    X1_blocks = utils.blocks(X1, width=block_size)
+    X0_blocks = blocks(X0, width=block_size)
+    X1_blocks = blocks(X1, width=block_size)
 
     interpolated_blocks = []
     for x0, x1 in zip(X0_blocks, X1_blocks):
-        predicted_frames = _inference(x0, x1, flownet, 
+        predicted_frames = _inference(x0, x1, flownet,
                                       interpnet, warper,
                                       multivariate, T)
         predicted_frames = [x0.values[np.newaxis]] + predicted_frames + [x1.values[np.newaxis]]
         interpolated_blocks += [block_predictions_to_dataarray(predicted_frames, x0)]
     return merge_and_average_dataarrays(interpolated_blocks)
-

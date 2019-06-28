@@ -56,13 +56,13 @@ def train_evaluate(parameterization):
     if not np.isfinite(loss):
         loss = 1e6
 
-    return dict(loss=(min([loss, 1.]), 0.0))
+    return dict(loss=(-min([loss, 1.]), 0.0))
 
 best_parameters, values, experiment, model = optimize(
         parameters=[
                     {"name": "lr", "type": "range", "bounds": [1e-6, 1e-3], "log_scale": True},
-                    {"name": "w", "type": "range", "bounds": [1e-6, 2.0]},
-                    {"name": "s", "type": "range", "bounds": [1e-6, 2.0]},
+                    {"name": "w", "type": "range", "bounds": [1e-2, 2.0]},
+                    {"name": "s", "type": "range", "bounds": [1e-2, 2.0]},
                 ],
         evaluation_function=train_evaluate,
         objective_name='loss',

@@ -3,12 +3,12 @@
 #PBS -l select=1:ncpus=1:model=sky_gpu,walltime=2:00:00
 #PBS -j eo
 #PBS -m e
-#PBS -N bayesopt_training
+#PBS -N bayesopt_16bands
 #PBS -W group_list=s1007
-#PBS -q alphatst
+#PBS -q v100 
 
 module purge
 source ~/.bashrc
 conda activate slomo
 
-python bayesopt_training.py --epochs 1 --total_trials 20 --experiment_name 8channels-20trials-1epoch --n_channels 8 > bayesopt_8band.log
+python train_net.py --epochs 50 --n_channels 3 > train_net.log

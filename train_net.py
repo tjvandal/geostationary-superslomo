@@ -29,7 +29,6 @@ def train_net(n_channels=3,
               lambda_w=1.,
               lambda_s=1.):
 
-
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     if multivariate:
@@ -60,13 +59,13 @@ def train_net(n_channels=3,
     data_params = {'batch_size': batch_size, 'shuffle': True,
                    'num_workers': 20, 'pin_memory': True}
 
-    print("example_directory: {}".format(example_directory))
     dataset = goes16s3.GOESDataset(example_directory=example_directory,
                                         n_upsample=9,
                                         n_overlap=3)
     train_size = int(len(dataset)*0.9)
     val_size = len(dataset) - train_size
     print("train_size: {}, val size: {}".format(train_size, val_size))
+
     training_set, val_set= torch.utils.data.random_split(dataset, [train_size, val_size])
     training_generator = data.DataLoader(training_set, **data_params)
     val_generator = data.DataLoader(val_set, **data_params)
@@ -120,7 +119,10 @@ def train_net(n_channels=3,
             t0 = time.time()
             for batch_idx, (sample, t_sample) in enumerate(data_loaders[phase]):
                 t_sample = t_sample.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(device).float()
-                if sample.shape[1] != n_channels: print('N channels dont match with array shape'); continue
+                if sample.shape[2] != n_channels:
+                    print("Sample shape:", sample.shape)
+                    print('N={} channels dont match with array shape={}'.format(n_channels, sample.shape[1]))
+                    return None
 
                 #I0, I1, IT = I0.to(device), I1.to(device), IT.to(device, non_blocking=True)
                 sample = sample.to(device)
@@ -221,7 +223,7 @@ def train_net(n_channels=3,
 
 def test_experiment(args):
     example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
-    model_directory = 'saved-models/tests/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(args.batch_size)
+    model_directory = 'saved-models/tests/9Min-%iChannels'
     if args.multivariate:
         model_directory += '_MV'
 
@@ -229,7 +231,7 @@ def test_experiment(args):
     w = args.lambda_w
     c = args.n_channels
 
-    train_net(model_path=model_directory % (c, w, s),
+    train_net(model_path=model_directory % c,
               lr=args.learning_rate,
               batch_size=args.batch_size,
               n_channels=c,
@@ -240,15 +242,19 @@ def test_experiment(args):
               lambda_s=args.lambda_s)
 
 if __name__ == "__main__":
+    # best parameters 
+    best_params = {"lr": 0.001, "w": 0.01000000000000168, "s": 1.540704601965142,
+                   "n_channels": 3, "batch_size": 128}
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpus", default="0,1,2,3", type=str)
     parser.add_argument("--multivariate", dest='multivariate', action='store_true')
     parser.add_argument("--n_channels", default=3, type=int)
     parser.add_argument("--epochs", default=5, type=int)
-    parser.add_argument("--batch_size", default=32, type=int)
-    parser.add_argument("--learning_rate", default=1e-4, type=float)
-    parser.add_argument("--lambda_s", default=1e-1, type=float)
-    parser.add_argument("--lambda_w", default=1e-1, type=float)
+    parser.add_argument("--batch_size", default=best_params['batch_size'], type=int)
+    parser.add_argument("--learning_rate", default=best_params['lr'], type=float)
+    parser.add_argument("--lambda_s", default=best_params['s'], type=float)
+    parser.add_argument("--lambda_w", default=best_params['w'], type=float)
     parser.set_defaults(multivariate=False)
     args = parser.parse_args()
 
@@ -257,6 +263,5 @@ if __name__ == "__main__":
     BATCH_SIZE = args.batch_size
 
     torch.manual_seed(0)
-
 
     test_experiment(args)
