@@ -18,7 +18,6 @@ from slomo import unet
 from data import goes16s3
 import tools.eval_utils
 
-
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
               example_directory='/nobackupp10/tvandal/GOES-SloMo/data/9Min-3Channels/',
@@ -221,17 +220,19 @@ def train_net(n_channels=3,
                                                                          example_per_second))
     return best_validation_loss
 
-def test_experiment(args):
+def manual_experiment(args):
     example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
-    model_directory = 'saved-models/tests/9Min-%iChannels'
+    model_directory = os.path.join(args.model_directory, '9Min-{}Channels'.format(args.n_channels))
     if args.multivariate:
-        model_directory += '_MV'
+        model_directory += '-MV'
+    else:
+        model_directory += '-SV'
 
     s = args.lambda_s
     w = args.lambda_w
     c = args.n_channels
 
-    train_net(model_path=model_directory % c,
+    train_net(model_path=model_directory,
               lr=args.learning_rate,
               batch_size=args.batch_size,
               n_channels=c,
@@ -244,7 +245,7 @@ def test_experiment(args):
 if __name__ == "__main__":
     # best parameters 
     best_params = {"lr": 0.001, "w": 0.01000000000000168, "s": 1.540704601965142,
-                   "n_channels": 3, "batch_size": 128}
+                    "batch_size": 128}
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpus", default="0,1,2,3", type=str)
@@ -255,6 +256,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", default=best_params['lr'], type=float)
     parser.add_argument("--lambda_s", default=best_params['s'], type=float)
     parser.add_argument("--lambda_w", default=best_params['w'], type=float)
+    parser.add_argument("--model_directory", default="saved-models/test/", type=str)
     parser.set_defaults(multivariate=False)
     args = parser.parse_args()
 
@@ -264,4 +266,4 @@ if __name__ == "__main__":
 
     torch.manual_seed(0)
 
-    test_experiment(args)
+    manual_experiment(args)

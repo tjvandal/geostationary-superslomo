@@ -11,4 +11,4 @@ module purge
 source ~/.bashrc
 conda activate slomo
 
-python train_net.py --epochs 50 --n_channels 3 > train_net.log
+python train_net.py --epochs 50 --n_channels 8 --multivariate --model_directory saved-models/v1/ > train_net.log

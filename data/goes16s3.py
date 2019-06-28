@@ -99,8 +99,6 @@ def _open_and_merge_2km(files, normalize=True):
     return das
 
 ## Interact with NOAA GOES ABI dataset via S3 and local paths
-
-
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
     def __init__(self, product='ABI-L1b-RadM', channels=range(1,17),
@@ -375,7 +373,7 @@ class GOESDataset(Dataset):
             block = np.load(f)
             if self.train:
                 block = self.transform(block)
-            return_index = np.random.choice(range(1, self.n_upsample-1))
+            return_index = np.random.choice(range(1, self.n_upsample))
             I0 = torch.from_numpy(block[0])
             I1 = torch.from_numpy(block[-1])
             IT = torch.from_numpy(block[return_index])

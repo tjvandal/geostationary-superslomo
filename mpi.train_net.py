@@ -12,21 +12,21 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 name = MPI.Get_processor_name()
 
-N_GPUS = 8
+N_GPUS = 4
 
 example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-{}Channels-Train-pt'
 model_directory = 'saved-models/v1/9Min-{}Channels-{}'
 
 best_params = {"lr": 0.001, "w": 0.01, "s": 1.54, "batch_size": 128}
-epochs = 50
+epochs = 100
 
-param_list = [(c, m) for c in [3, 8, 16] for m in [True, False]]
+param_list = [(c, m) for c in [3, 8] for m in [True, False]]
 
-# set GPU
-os.environ["CUDA_VISIBLE_DEVICES"] = str(rank % N_GPUS)
+# set GPUs
+os.environ["CUDA_VISIBLE_DEVICES"] = ','.join([str(v) for v in range(0, N_GPUS)])
 
 for i, p in enumerate(param_list):
-    if i % N_GPUS == rank:
+    if i % size == rank:
         if p[1]:
             mdir = model_directory.format(p[0], 'MV')
         else:
