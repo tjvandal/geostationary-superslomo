@@ -26,12 +26,26 @@ Generating training patches from the raw data is done in parallel on a single no
 
 ## Perform Bayesian Optimization to find Hyper-parameters
 
-Bayesian Optimization is used to select hyperparameters using the Ax library and Pytorch. `bayesopt_training.py` will find hyper-parameters for a specified set of channels, `n_channels`, and single- or multi-variate, `multivariate`. Multiple experiments can be ran in parallel on NAS's v100 queue on sky_gpu using the pbs script `mpi.bayesopt_training.pbs`. 
+Bayesian Optimization is used to select hyperparameters using the Ax library and Pytorch. `bayesopt_training.py` will find hyper-parameters for a specified set of channels, `n_channels`, and single- or multi-variate, `multivariate`. Multiple experiments can be ran in parallel on NAS's v100 queue on sky_gpu using the pbs script `./mpi.bayesopt_training.pbs`. 
 
 ## Training models and experiments
 
-`train_net.py` contains the base training methods for interpolation model, include the flow and interpolation convolutional neural networks. 
+`train_net.py` contains the base training methods for interpolation model, include the flow and interpolation convolutional neural networks. Currently, the hyperparameters are hardcoded, this may need to change. 
 
-To train single experiment: 
+To train single experiment: `python ./train_net.py --epochs 50 --n_channels 8 --multivariate`<br>
+To train set of experiments: Define parameterizations in `./mpi.train_net.py` and submit NAS job `qsub ./mpi.train_net.pbs`
 
 ## Run inference on test set (year 2019)
+
+Perform inference and store outputs for analysis. A linear interpolation prediction is also made, all predictions are loaded into a single .nc file. 
+
+Single model: `python ./inference_test.py`<br>
+Parallelized by day: `./mpi.inference_test.py` submitted on NAS as `qsub ./mpi.inference_test.py`
+
+## Analysis of Test Set
+
+After performing inference on the test set for you're selected n_channels (we used 3 and 8 for the interpolation paper), we generate tables and figures of the results using code in `./notebooks/`,  `python ./notebooks/testing_tables.py`.
+
+TODOs
+1. Clean of analysis scripts
+1. Split NOAAGOESS3 into multiple classes (this requires downstream changes). 
