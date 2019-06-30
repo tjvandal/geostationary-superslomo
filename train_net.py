@@ -18,23 +18,6 @@ from slomo import unet
 from data import goes16s3
 import tools.eval_utils
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--gpus", default="0,1,2,3", type=str)
-parser.add_argument("--multivariate", dest='multivariate', action='store_true')
-parser.add_argument("--channel", default=None, type=int)
-parser.add_argument("--epochs", default=5, type=int)
-parser.set_defaults(multivariate=False)
-args = parser.parse_args()
-
-os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
-
-EPOCHS = args.epochs
-LEARNING_RATE = 1e-4
-BATCH_SIZE = 100# * torch.cuda.device_count()
-
-torch.manual_seed(0)
-
-
 def train_net(n_channels=3,
               model_path='./saved-models/default/',
               example_directory='/nobackupp10/tvandal/GOES-SloMo/data/9Min-3Channels/',
@@ -42,9 +25,8 @@ def train_net(n_channels=3,
               batch_size=1,
               lr=1e-4,
               multivariate=True,
-              lambda_w=0.0,
-              lambda_s=0.0):
-
+              lambda_w=1.,
+              lambda_s=1.):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -76,13 +58,13 @@ def train_net(n_channels=3,
     data_params = {'batch_size': batch_size, 'shuffle': True,
                    'num_workers': 20, 'pin_memory': True}
 
-    print("example_directory: {}".format(example_directory))
     dataset = goes16s3.GOESDataset(example_directory=example_directory,
                                         n_upsample=9,
                                         n_overlap=3)
     train_size = int(len(dataset)*0.9)
     val_size = len(dataset) - train_size
     print("train_size: {}, val size: {}".format(train_size, val_size))
+
     training_set, val_set= torch.utils.data.random_split(dataset, [train_size, val_size])
     training_generator = data.DataLoader(training_set, **data_params)
     val_generator = data.DataLoader(val_set, **data_params)
@@ -115,12 +97,13 @@ def train_net(n_channels=3,
     flownet, interpnet, optimizer, start_epoch = load_checkpoint(flownet, interpnet, optimizer,
                                                                  filename=flownet_filename)
 
-    step = int(start_epoch * data_lengths['train'] / BATCH_SIZE)
+    step = int(start_epoch * data_lengths['train'] / batch_size)
     tfwriter = SummaryWriter(os.path.join(model_path, 'tfsummary'))
+
     print("Begin Training at epoch {}".format(start_epoch))
     best_validation_loss = 1e10
-    for epoch in range(start_epoch+1, EPOCHS+1):
-        print("\nEpoch {}/{}".format(epoch, EPOCHS))
+    for epoch in range(start_epoch+1, epochs +1):
+        print("Epoch {}/{}".format(epoch, epochs))
         print("-"*10)
 
         for phase in ['train', 'val']:
@@ -135,7 +118,10 @@ def train_net(n_channels=3,
             t0 = time.time()
             for batch_idx, (sample, t_sample) in enumerate(data_loaders[phase]):
                 t_sample = t_sample.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(device).float()
-                if sample.shape[1] != n_channels: print('N channels dont match with array shape'); continue
+                if sample.shape[2] != n_channels:
+                    print("Sample shape:", sample.shape)
+                    print('N={} channels dont match with array shape={}'.format(n_channels, sample.shape[1]))
+                    return None
 
                 #I0, I1, IT = I0.to(device), I1.to(device), IT.to(device, non_blocking=True)
                 sample = sample.to(device)
@@ -200,7 +186,7 @@ def train_net(n_channels=3,
                 optimizer.step()
 
                 running_loss += loss.item()
-                if batch_idx % 50 == 0:
+                if batch_idx % 100 == 0:
                     losses = [loss_reconstruction.item(), loss_warp.item(), loss.item()]
                     tfwriter.add_scalar('train/losses/recon', loss_reconstruction, step)
                     tfwriter.add_scalar('train/losses/warp', loss_warp, step)
@@ -211,8 +197,8 @@ def train_net(n_channels=3,
                         ssize = train_size
                     else:
                         ssize = val_size
-                    print('{} Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tExamples/Second: {:.0f}'.
-                                format(phase.upper(), epoch, batch_idx * batch_size,
+                    print('[{}] Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tExamples/Second: {:.0f}'.
+                                format(phase, epoch, batch_idx * batch_size,
                                        ssize, 100 * batch_size * batch_idx / ssize,
                                        loss.item(), examples_per_second))
                 step += 1
@@ -221,7 +207,7 @@ def train_net(n_channels=3,
                      'optimizer': optimizer.state_dict(),
                      'interpnet_state_dict': interpnet.state_dict()}
 
-            epoch_loss = running_loss / data_lengths[phase]
+            epoch_loss = running_loss * batch_size / data_lengths[phase]
             torch.save(state, flownet_filename)
             if (phase == 'val') and (epoch_loss < best_validation_loss):
                 filename = os.path.join(model_path, 'best.flownet.pth.tar')
@@ -232,57 +218,52 @@ def train_net(n_channels=3,
             example_per_second = 1./t
             print('[{}] Loss: {:.6f}, Examples per second: {:6f}'.format(phase, epoch_loss,
                                                                          example_per_second))
+    return best_validation_loss
 
-def run_experiments(multivariate):
+def manual_experiment(args):
     example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
-    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE)
-    #lambda_ws = [0.01, 0.1, 0.5, 1.0]
-    #lambda_ws = [0.01, 0.1, 0.5, 1.0]
-    lambda_ws = [0.1,]
-    lambda_ss = [0.1,]
-    if multivariate:
-        model_directory += '_MV2'
+    model_directory = os.path.join(args.model_directory, '9Min-{}Channels'.format(args.n_channels))
+    if args.multivariate:
+        model_directory += '-MV'
+    else:
+        model_directory += '-SV'
 
-    for c in [3,8]:
-        for w in lambda_ws:
-            for s in lambda_ss:
-                if (args.channel is not None) and (args.channel != c):
-                    continue
+    s = args.lambda_s
+    w = args.lambda_w
+    c = args.n_channels
 
-                if multivariate and (c == 1):
-                    continue
-
-                data = example_directory % c
-                train_net(model_path=model_directory % (c, w, s),
-                          lr=LEARNING_RATE,
-                          batch_size=BATCH_SIZE,
-                          n_channels=c,
-                          example_directory=data,
-                          epochs=EPOCHS,
-                          multivariate=multivariate,
-                          lambda_w=w,
-                          lambda_s=s)
-
-def test_experiment(multivariate):
-    example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
-    model_directory = 'saved-models/9Min-%iChannels-LambdaW_%1.2f-LambdaS_%1.2f-Batch' + str(BATCH_SIZE)
-    if multivariate:
-        model_directory += '_MV2'
-
-    s = 0.1
-    w = 0.1
-    c = 3
-
-    data = example_directory % c
-    train_net(model_path=model_directory % (c, w, s),
-              lr=LEARNING_RATE,
-              batch_size=BATCH_SIZE,
+    train_net(model_path=model_directory,
+              lr=args.learning_rate,
+              batch_size=args.batch_size,
               n_channels=c,
-              example_directory=data,
-              epochs=EPOCHS,
-              multivariate=multivariate,
-              lambda_w=w,
-              lambda_s=s)
+              example_directory=example_directory % c,
+              epochs=args.epochs,
+              multivariate=args.multivariate,
+              lambda_w=args.lambda_w,
+              lambda_s=args.lambda_s)
 
 if __name__ == "__main__":
-    test_experiment(False)
+    # best parameters 
+    best_params = {"lr": 0.001, "w": 0.01000000000000168, "s": 1.540704601965142,
+                    "batch_size": 128}
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gpus", default="0,1,2,3", type=str)
+    parser.add_argument("--multivariate", dest='multivariate', action='store_true')
+    parser.add_argument("--n_channels", default=3, type=int)
+    parser.add_argument("--epochs", default=5, type=int)
+    parser.add_argument("--batch_size", default=best_params['batch_size'], type=int)
+    parser.add_argument("--learning_rate", default=best_params['lr'], type=float)
+    parser.add_argument("--lambda_s", default=best_params['s'], type=float)
+    parser.add_argument("--lambda_w", default=best_params['w'], type=float)
+    parser.add_argument("--model_directory", default="saved-models/test/", type=str)
+    parser.set_defaults(multivariate=False)
+    args = parser.parse_args()
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
+
+    BATCH_SIZE = args.batch_size
+
+    torch.manual_seed(0)
+
+    manual_experiment(args)
