@@ -28,7 +28,7 @@ def hyperparameter_optimization(n_channels,
             exp_name = '9min-%iChannels-MV' % c
         else:
             exp_name = '9min-%iChannels-SV' % c
-        exp_name = 'LambdaW_%1.2f-LambdaS_%1.2f' % (w, s)
+        exp_name = exp_name + '/LambdaW_%1.2f-LambdaS_%1.2f' % (w, s)
 
         example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-%iChannels-Train-pt'
         model_directory = os.path.join('saved-models/', experiment_name, exp_name)
@@ -66,7 +66,11 @@ def hyperparameter_optimization(n_channels,
     print(best_parameters)
 
     json_params = json.dumps(best_parameters)
-    with open(os.path.join('saved-models', experiment_name, 'best_parameters.json'), 'w') as f:
+    parameter_directory = os.path.join('saved-models', experiment_name)
+    if not os.path.exists(parameter_directory):
+        os.makedirs(parameter_directory)
+
+    with open(os.path.join(parameter_directory, 'best_parameters.json'), 'w') as f:
         f.write(json_params)
 
 if __name__ == '__main__':

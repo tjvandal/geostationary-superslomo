@@ -61,6 +61,14 @@ vector_data = inference_tools.single_inference_split(I0.values, I1.values, t,
                                                     overlap=64)
 
 plotting.plot_3channel_image(I0.values)
+plt.tight_layout()
+plt.savefig("figures/falsergb_image0.png")
+plt.close()
+
+plotting.plot_3channel_image(I1.values)
+plt.tight_layout()
+plt.savefig("figures/falsergb_image1.png")
+plt.close()
 
 f_01 = vector_data['f_01']
 f_10 = vector_data['f_10']
@@ -69,11 +77,14 @@ f_01_lr = lowres_flow(f_01)
 f_10_lr = lowres_flow(f_10)
 
 total_flow = f_01 + vector_data['delta_f_t1']
+#total_flow = vector_data['delta_f_t1']
 total_flow_lr = lowres_flow(total_flow, 25)
 
 for c in range(n_channels):
+#kfor c in [0,]:
     u = total_flow_lr[2*c]
     v = total_flow_lr[2*c+1]
     plotting.flow_quiver_plot(u, v, title='Band {}'.format(c+1))
-
-plt.show()
+    plt.tight_layout()
+    plt.savefig("figures/optical-flow-{}.png".format(c+1))
+    plt.close()

@@ -29,7 +29,7 @@ def time_rmse(x1, x2):
 
 def inference_day(year, dayofyear, n_minutes=15, n_channels=3):
     data_directory = '/nobackupp10/tvandal/data/goes16'
-    inference_dir = 'data/v1-inference/%iChannel-%iminute' % (n_channels, n_minutes)
+    inference_dir = 'data/v1.1-inference/%iChannel-%iminute' % (n_channels, n_minutes)
 
     # Initialize data reader
     channels = list(range(1,n_channels+1))
@@ -40,8 +40,8 @@ def inference_day(year, dayofyear, n_minutes=15, n_channels=3):
         os.makedirs(inference_dir)
 
     # Read checkpoints and models
-    checkpoint_sv = './saved-models/v1/9Min-%iChannels-SV/' % n_channels
-    checkpoint_mv = './saved-models/v1/9Min-%iChannels-MV/' % n_channels
+    checkpoint_sv = './saved-models/1.1/9Min-%iChannels-SV/' % n_channels
+    checkpoint_mv = './saved-models/1.1/9Min-%iChannels-MV/' % n_channels
 
     flownetsv, interpnetsv, warpersv = inference_tools.load_models(n_channels, checkpoint_sv,
                                                              multivariate=False)

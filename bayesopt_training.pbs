@@ -11,4 +11,4 @@ module purge
 source ~/.bashrc
 conda activate slomo
 
-python bayesopt_training.py --epochs 1 --total_trials 50 --experiment_name 8channels-MV --n_channels 8 --multivariate > bayesopt_8band.log
+python bayesopt_training.py --epochs 2 --total_trials 50 --experiment_name 8channel-MV --n_channels 8 --multivariate > bayesopt_8band.log

@@ -1,6 +1,6 @@
 #PBS -S /bin/bash
 #PBS -l site=needed=/home1+/nex+/nobackupp10
-#PBS -l select=4:ncpus=1:model=sky_gpu,walltime=2:00:00
+#PBS -l select=2:ncpus=1:model=sky_gpu,walltime=24:00:00
 #PBS -j eo
 #PBS -m e
 #PBS -N train_slomo 
@@ -11,4 +11,4 @@ module purge
 source ~/.bashrc
 conda activate slomo
 
-mpiexec -np 4 python mpi.train_net.py > mpi.train_net.log
+mpiexec -np 2 python mpi.train_net.py > mpi.train_net.log

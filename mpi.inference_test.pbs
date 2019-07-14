@@ -1,9 +1,9 @@
 #PBS -S /bin/bash
 #PBS -l site=needed=/home1+/nex+/nobackupp10
-#PBS -l select=4:ncpus=4:model=sky_gpu,walltime=2:00:00
+#PBS -l select=4:ncpus=4:model=sky_gpu,walltime=12:00:00
 #PBS -j eo
 #PBS -m e
-#PBS -N slomo_testing_inference 
+#PBS -N slomo_test_inference 
 #PBS -W group_list=s1007
 #PBS -q v100 
 

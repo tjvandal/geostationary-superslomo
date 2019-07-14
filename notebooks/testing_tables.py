@@ -56,8 +56,8 @@ rmses = dict()
 #rmses['3Channels'] = read_rmses('/raid/tj/GOES/SloMo/3Channel-15minute-Inference-Test')
 #rmses['8Channels'] = read_rmses('/raid/tj/GOES/SloMo/8Channel-15minute-Inference-Test')
 
-rmses['3Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1-inference/3Channel-15minute/')
-rmses['8Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1-inference/8Channel-15minute/')
+rmses['3Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.1-inference/3Channel-15minute/')
+rmses['8Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.1-inference/8Channel-15minute/')
 
 
 
@@ -173,7 +173,7 @@ fig, ax = plt.subplots(figsize = (10,6))
 ax.plot_date(xt[x15], obs_ts_np[x15], ls='--', lw=2, color='black', label='15-Min\nObserved', ms=0.)
 ax.plot_date(xt, obs_ts_np, label='5-Min\nObserved', ls='-', ms=0, color='blue', alpha=0.5)
 ax.plot_date(xt, sv_ts_np, label='MV-SloMo', ls='-', ms=0, color='green')
-ax.xaxis.set_major_formatter(myFmt); 
+ax.xaxis.set_major_formatter(myFmt);
 
 #plt.plot(x, ln_ts_np, label='Linear', color='red')
 plt.legend()
@@ -182,18 +182,3 @@ plt.ylabel("Pixel Intensity (0 to 1)")
 plt.title("Pixel Intensity Time-Series Comparison - Band 1")
 plt.tight_layout()
 plt.savefig("figures/time-series.png")
-
-
-# In[94]:
-
-
-import datetime
-
-xt
-
-
-# In[ ]:
-
-
-
-

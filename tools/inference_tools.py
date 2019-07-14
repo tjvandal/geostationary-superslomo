@@ -59,28 +59,14 @@ def split_array(arr, tile_size=128, overlap=16):
     arrs['upper_left'] = np.concatenate(arrs['upper_left'])
     return arrs['patches'], arrs['upper_left']
 
-def reassemble_array(arr, upper_left_indices, height, width):
-    assert len(arr.shape) == 4
-    N_patches, channels, pheight, pwidth = arr.shape
-    y_sum = np.zeros((arr.shape[1], height, width))
-    y_counter = np.zeros((arr.shape[1], height, width))
-
-    for n, (i,j)  in enumerate(upper_left_indices):
-        y_counter[:, i:i+pheight, j:j+pwidth] += 1
-        y_sum[:, i:i+pheight, j:j+pwidth] += arr[n]
-
-    y = np.where(y_counter!=0,y_sum/y_counter,0)
-    return y
-
 ## Load and return flownet, interpnet, and warper
 def load_models(n_channels, model_path, multivariate=False):
 
+    model_filename = os.path.join(model_path, 'best.flownet.pth.tar')
     if multivariate:
-        model_filename = os.path.join(model_path, 'checkpoint.flownet.mv.pth.tar')
         flownet = fl.SloMoFlowNetMV(n_channels)#.cuda()
         interpnet = fl.SloMoInterpNetMV(n_channels)#.cuda()
     else:
-        model_filename = os.path.join(model_path, 'checkpoint.flownet.pth.tar')
         flownet = fl.SloMoFlowNet(n_channels)#.cuda()
         interpnet = fl.SloMoInterpNet(n_channels)#.cuda()
 
@@ -124,12 +110,8 @@ def single_inference(X0, X1, t, flownet, interpnet,
     X0_arr_torch[np.isnan(X0_arr_torch)] = 0.
     X1_arr_torch[np.isnan(X1_arr_torch)] = 0.
 
-    if len(X0_arr_torch.shape) == 3:
-        X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0)
-        X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0)
-
-    X0_arr_torch = X0_arr_torch.to(device)
-    X1_arr_torch = X1_arr_torch.to(device)
+    X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device)
+    X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device)
 
     f = flownet(X0_arr_torch, X1_arr_torch)
     n_channels = X0_arr_torch.shape[1]
@@ -141,12 +123,17 @@ def single_inference(X0, X1, t, flownet, interpnet,
         f_01 = f[:,:2]
         f_10 = f[:,2:]
 
+    predicted_frames = []
+
     I_t, g0, g1, V_t0, V_t1, delta_f_t0, delta_f_t1 = interpnet(X0_arr_torch, X1_arr_torch, f_01, f_10, t)
+    predicted_frames.append(I_t.cpu().detach().numpy())
+
     out = {'f_01': f_01, 'f_10': f_10, 'I_t': I_t,
            'V_t0': V_t0, 'V_t1': V_t1, 'delta_f_t0': delta_f_t0,
            'delta_f_t1': delta_f_t0}
-    for key in out:
-        out[key] = out[key].cpu().detach().numpy()
+
+    for k in out.keys():
+        out[k] = out[k][0].cpu().detach().numpy()
 
     #torch.cuda.empty_cache()
     return out
@@ -157,16 +144,29 @@ def single_inference_split(X0, X1, t, flownet, interpnet,
     X0_split, upper_left_idxs = split_array(X0, block_size, overlap)
     X1_split, _ = split_array(X1, block_size, overlap)
 
-    # perform inference on patches
-    split_res = single_inference(X0_split, X1_split, t, flownet,
-                                 interpnet, multivariate)
+    assert len(X0_split) > 0
 
-    # reassemble into arrays
-    res = dict()
-    for key in split_res:
-        res[key] = reassemble_array(split_res[key], upper_left_idxs,
-                                    X0.shape[1], X0.shape[2])
-    return res
+    # perform inference on patches
+    height, width = X0.shape[1:3]
+    counter = np.zeros((1, height, width))
+    res_sum = {}
+    for i, (x0, x1) in enumerate(zip(X0_split, X1_split)):
+        ix, iy = upper_left_idxs[i]
+        res_i = single_inference(x0, x1, t, flownet, interpnet,
+                                 multivariate)
+        keys = res_i.keys()
+        if i == 0:
+            res_sum = {k: np.zeros((res_i[k].shape[0], height, width)) for k in keys}
+
+        for var in keys:
+            res_sum[var][:,ix:ix+block_size,iy:iy+block_size] += res_i[var]
+            counter[:,ix:ix+block_size,iy:iy+block_size] += 1.
+
+    out = {}
+    for var in res_sum.keys():
+       out[var] = res_sum[var] / counter
+
+    return out
 
 
 def _inference(X0, X1, flownet, interpnet, warper,

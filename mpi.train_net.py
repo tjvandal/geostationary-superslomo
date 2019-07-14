@@ -12,15 +12,20 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 name = MPI.Get_processor_name()
 
-N_GPUS = 4
-
+model_name = 'unet-medium'
+version = '1.1-{}'.format(model_name)
 example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-{}Channels-Train-pt'
-model_directory = 'saved-models/v1/9Min-{}Channels-{}'
+model_directory = 'saved-models/{}'.format(version) + '/9Min-{}Channels-{}'
 
-best_params = {"lr": 0.001, "w": 0.01, "s": 1.54, "batch_size": 128}
+# training parameters
+N_GPUS = 4
 epochs = 100
 
-param_list = [(c, m) for c in [3, 8] for m in [True, False]]
+# these parameters are selected with consensus from bayesian optimization runs
+best_params = {"lr": 1.0007, "w": 0.50, "s": 0.75, "batch_size": 128}
+
+#param_list = [(c, m) for c in [3, 8] for m in [True, False]]
+param_list = [(c, m) for c in [8,] for m in [True, False]]
 
 # set GPUs
 os.environ["CUDA_VISIBLE_DEVICES"] = ','.join([str(v) for v in range(0, N_GPUS)])
@@ -41,4 +46,5 @@ for i, p in enumerate(param_list):
                         epochs=epochs,
                         multivariate=p[1],
                         lambda_w=best_params['w'],
-                        lambda_s=best_params['s'])
+                        lambda_s=best_params['s'],
+                        model_name=model_name)
