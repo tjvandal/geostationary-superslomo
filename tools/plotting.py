@@ -61,7 +61,7 @@ def flow_quiver_plot(u, v, ax=None, title=None):
     y = np.arange(0, v.shape[0])
     X, Y = np.meshgrid(x, y)
     if not ax:
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig, ax = plt.subplots(figsize=(20, 10))
 
 
     #ax.quiver(X, Y, flow[1,::-1,::-1], flow[0,::-1,::-1])

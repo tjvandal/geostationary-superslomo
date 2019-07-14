@@ -26,18 +26,24 @@ def train_net(n_channels=3,
               lr=1e-4,
               multivariate=True,
               lambda_w=1.,
-              lambda_s=1.):
+              lambda_s=1.,
+              model_name='unet-small'):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+    if model_name == 'unet-small':
+        nn_model = unet.UNetSmall
+    elif model_name == 'unet-medium':
+        nn_model = unet.UNetMedium
+
     if multivariate:
         flownet_filename = os.path.join(model_path, 'checkpoint.flownet.mv.pth.tar')
-        flownet = fl.SloMoFlowNetMV(n_channels)
-        interpnet = fl.SloMoInterpNetMV(n_channels)
+        flownet = fl.SloMoFlowNetMV(n_channels, model=nn_model)
+        interpnet = fl.SloMoInterpNetMV(n_channels, model=nn_model)
     else:
         flownet_filename = os.path.join(model_path, 'checkpoint.flownet.pth.tar')
-        flownet = fl.SloMoFlowNet(n_channels)
-        interpnet = fl.SloMoInterpNet(n_channels)
+        flownet = fl.SloMoFlowNet(n_channels, model=nn_model)
+        interpnet = fl.SloMoInterpNet(n_channels, model=nn_model)
 
     warper = fl.FlowWarper()
 
@@ -240,11 +246,12 @@ def manual_experiment(args):
               epochs=args.epochs,
               multivariate=args.multivariate,
               lambda_w=args.lambda_w,
-              lambda_s=args.lambda_s)
+              lambda_s=args.lambda_s,
+              model_name=args.model_name)
 
 if __name__ == "__main__":
     # best parameters 
-    best_params = {"lr": 0.001, "w": 0.01000000000000168, "s": 1.540704601965142,
+    best_params = {"lr": 0.001, "w": 0.5, "s": 0.75,
                     "batch_size": 128}
 
     parser = argparse.ArgumentParser()
@@ -257,6 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_s", default=best_params['s'], type=float)
     parser.add_argument("--lambda_w", default=best_params['w'], type=float)
     parser.add_argument("--model_directory", default="saved-models/test/", type=str)
+    parser.add_argument("--model_name", default="unet-small", type=str)
     parser.set_defaults(multivariate=False)
     args = parser.parse_args()
 

@@ -98,6 +98,7 @@ def _open_and_merge_2km(files, normalize=True):
     das = xr.concat(das, 'band')
     return das
 
+
 ## Interact with NOAA GOES ABI dataset via S3 and local paths
 class NOAAGOESS3(object):
     '<Key: noaa-goes16,ABI-L1b-RadC/2000/001/12/OR_ABI-L1b-RadC-M3C01_G16_s20000011200000_e20000011200000_c20170671748180.nc>'
@@ -411,8 +412,5 @@ def download_conus_data():
 
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
-    #download_data(n_jobs=4)
     download_data(test=True, n_jobs=6)
-    #training_set()
-    #test_set()
-    #download_conus_data()
+    download_data(test=False, n_jobs=6)
