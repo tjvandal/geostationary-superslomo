@@ -1,11 +1,14 @@
 import numpy as np
 import os, sys
 import matplotlib
+#matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import seaborn
 import xarray as xr
 import pandas as pd
+import pickle
 
-
+'''
 params = {
    'axes.labelsize': 14,
    #'text.fontsize': 8,
@@ -17,7 +20,10 @@ params = {
    'figure.figsize': [7, 4] # instead of 4.5, 4.5
    }
 matplotlib.rcParams.update(params)
+'''
 
+seaborn.set_style("whitegrid")
+seaborn.set_context('paper', font_scale=1.7, rc={'lines.linewidth': 2.})
 
 def time_rmse(x1, x2):
     diff = np.square(x1 - x2)
@@ -50,16 +56,15 @@ def read_rmses(inference_dir, max_files=None):
 
 
 # In[20]:
+rmse_file = 'rmse-v1.3.pkl'
 
-
-rmses = dict()
-#rmses['3Channels'] = read_rmses('/raid/tj/GOES/SloMo/3Channel-15minute-Inference-Test')
-#rmses['8Channels'] = read_rmses('/raid/tj/GOES/SloMo/8Channel-15minute-Inference-Test')
-
-rmses['3Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.1-inference/3Channel-15minute/')
-rmses['8Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.1-inference/8Channel-15minute/')
-
-
+if not os.path.exists(rmse_file):
+    rmses = dict()
+    rmses['3Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.3-inference/3Channel-15minute/')
+    rmses['8Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.3-inference/8Channel-15minute/')
+    pickle.dump(rmses, file(rmse_file, 'w'))
+else:
+    rmses = pickle.load(file(rmse_file, 'r'))
 
 table1 = []
 
@@ -82,12 +87,11 @@ table1 = table1.set_index('index')
 
 print(table1.to_latex(float_format=lambda x: '%1.4f' % x))
 
-
+colors = [seaborn.xkcd_rgb["pale red"], seaborn.xkcd_rgb["medium green"], seaborn.xkcd_rgb["denim blue"]]
 fig = plt.figure(figsize=(10,6))
-rmses['3Channels']['linear'].mean('example').mean('band').compute().plot(color='red', label='Linear Interp')
-rmses['3Channels']['sv'].mean('example').mean('band').compute().plot(color='blue', label='SV SloMo')
-rmses['3Channels']['mv'].mean('example').mean('band').compute().plot(color='green', label='MV SloMo')
-#plt.
+rmses['3Channels']['linear'].mean('example').mean('band').compute().plot(color=colors[0], label='Linear Interp')
+rmses['3Channels']['sv'].mean('example').mean('band').compute().plot(color=colors[1], label='SV SloMo')
+rmses['3Channels']['mv'].mean('example').mean('band').compute().plot(color=colors[2], label='MV SloMo')
 plt.xlabel("Time Step T")
 plt.ylabel("RMSE (Pixel Intensity)")
 plt.title("3 Band Root Mean Square Error")
@@ -95,11 +99,12 @@ plt.legend()
 plt.savefig("figures/3band-error-curve.png", dpi=200)
 plt.show()
 
+
 fig = plt.figure(figsize=(10,6))
-rmses['8Channels']['linear'].mean('example').mean('band').compute().plot(color='red', label='Linear Interp')
-rmses['8Channels']['sv'].mean('example').mean('band').compute().plot(color='blue', label='SV SloMo')
-rmses['8Channels']['mv'].mean('example').mean('band').compute().plot(color='green', label='MV SloMo')
-#plt.
+rmses['8Channels']['linear'].mean('example').mean('band').compute().plot(color=colors[0], label='Linear Interp')
+rmses['8Channels']['sv'].mean('example').mean('band').compute().plot(color=colors[1], label='SV SloMo')
+rmses['8Channels']['mv'].mean('example').mean('band').compute().plot(color=colors[2], label='MV SloMo')
+
 plt.xlabel("Time Step T")
 plt.ylabel("RMSE (Pixel Intensity)")
 plt.title("8 Band Root Mean Square Error")
@@ -108,26 +113,10 @@ plt.savefig("figures/8band-error-curve.png", dpi=200)
 plt.show()
 
 
-# In[27]:
-
-
-fig = plt.figure(figsize=(10,6))
-
-banderrs = rmses['8Channels']['mv'].mean('example').compute()
-
-for b in banderrs.band.values:
-    banderrs.sel(band=b).plot(color='red', label='Band %i' % b)
-
-plt.xlabel("Time Step T")
-plt.ylabel("RMSE (Pixel Intensity)")
-plt.title("8 Band Root Mean Square Error")
-plt.legend()
-plt.show()
-
 
 # In[84]:
 
-
+'''
 # Time Series
 inference_dir = '/raid/tj/GOES/SloMo/8Channel-15minute-Inference-Hurricane/'
 data_files = [os.path.join(inference_dir, f) for f in os.listdir(inference_dir) if f[-3:] == '.nc']
@@ -182,3 +171,4 @@ plt.ylabel("Pixel Intensity (0 to 1)")
 plt.title("Pixel Intensity Time-Series Comparison - Band 1")
 plt.tight_layout()
 plt.savefig("figures/time-series.png")
+'''
