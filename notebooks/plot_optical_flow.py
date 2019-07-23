@@ -3,6 +3,7 @@ sys.path.append(os.path.dirname(os.path.abspath(os.getcwd())))
 
 from data import goes16s3
 from tools import utils, inference_tools, plotting
+from slomo import unet
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +17,10 @@ import torch
 import cv2
 import pandas as pd
 
+import seaborn as sns
+
+sns.set_context("paper", font_scale=1.6)
+
 #dayofyear = 281
 #year = 2017
 #dayofyear = dt.datetime(year, 9, 6).timetuple().tm_yday
@@ -24,67 +29,75 @@ year = 2017
 month = 9
 day = 8
 n_channels = 8
-t = 1.0
-product = 'ABI-L1b-RadC'
-data_directory = '/nex/datapoolne/goes16'
-#data_directory = '/nobackupp10/tvandal/data/goes16'
+t = 0.5
+#product = 'ABI-L1b-RadC'
+#data_directory = '/nex/datapoolne/goes16'
+product = 'ABI-L1b-RadM'
+data_directory = '/nobackupp10/tvandal/data/goes16'
 hour = 18
 minute = 2
 minute_delta = 15
+nn_model = unet.UNetMedium
 
+discard = 64
 
-def lowres_flow(x, pool=25):
-    x = torch.from_numpy(x[np.newaxis])
-    xlr = torch.nn.AvgPool2d(pool, stride=pool)(x)
-    return xlr.detach().numpy()[0]
 
 
 dayofyear = dt.datetime(year, month, day).timetuple().tm_yday
 multivariate = True
 if multivariate:
-    checkpoint = '../saved-models/v1/9Min-%iChannels-MV/' % n_channels
+    checkpoint = '../saved-models/1.3-unet-medium/9Min-%iChannels-MV/' % n_channels
 else:
-    checkpoint = '../saved-models/v1/9Min-%iChannels-SV/' % n_channels
+    checkpoint = '../saved-models/1.3-unet-medium/9Min-%iChannels-SV/' % n_channels
 
 
 noaadata = goes16s3.NOAAGOESS3(product=product, channels=range(1,n_channels+1),
                               save_directory=data_directory, skip_connection=True)
 I0, I1 = noaadata.load_snapshots(year, dayofyear, hour, minute, minute_delta=minute_delta)
 
+print("I0: {}".format(I0.shape))
+
 if not os.path.exists('figures/network'):
     os.makedirs('figures/network')
 
 flownet, interpnet, warper= inference_tools.load_models(n_channels, checkpoint,
-                                                         multivariate=multivariate)
+                                                         multivariate=multivariate,
+                                                         nn_model=nn_model)
 vector_data = inference_tools.single_inference_split(I0.values, I1.values, t,
                                                      flownet, interpnet, multivariate,
-                                                    overlap=64)
+                                                     overlap=128, block_size=256+128,
+                                                     discard=discard)
 
-plotting.plot_3channel_image(I0.values)
-plt.tight_layout()
-plt.savefig("figures/falsergb_image0.png")
-plt.close()
+print("vector data keys: {}".format(vector_data.keys()))
 
-plotting.plot_3channel_image(I1.values)
+fig = plt.figure(frameon=False)
+ax = fig.add_axes([0, 0, 1, 1])
+plotting.plot_3channel_image(I1.values[:,discard:-discard, discard:-discard], ax=ax)
 plt.tight_layout()
-plt.savefig("figures/falsergb_image1.png")
-plt.close()
+plt.savefig("figures/falsergb_image1.png", dpi=300, pad_inches=0)
+
+fig = plt.figure(frameon=False)
+ax = fig.add_axes([0, 0, 1, 1])
+plotting.plot_3channel_image((I1-I0).values[:,discard:-discard, discard:-discard]*2, ax=ax)
+plt.tight_layout()
+plt.savefig("figures/diff_images.png", dpi=300, pad_inches=0)
 
 f_01 = vector_data['f_01']
-f_10 = vector_data['f_10']
-
-f_01_lr = lowres_flow(f_01)
-f_10_lr = lowres_flow(f_10)
 
 total_flow = f_01 + vector_data['delta_f_t1']
-#total_flow = vector_data['delta_f_t1']
-total_flow_lr = lowres_flow(total_flow, 25)
 
-for c in range(n_channels):
-#kfor c in [0,]:
-    u = total_flow_lr[2*c]
-    v = total_flow_lr[2*c+1]
-    plotting.flow_quiver_plot(u, v, title='Band {}'.format(c+1))
-    plt.tight_layout()
-    plt.savefig("figures/optical-flow-{}.png".format(c+1))
-    plt.close()
+for c in [7,]:
+    u = total_flow[2*c]
+    v = total_flow[2*c+1]
+    ax = plotting.flow_quiver_plot(u, v)
+    plt.savefig("figures/quiver_plot_band{}.png".format(c+1), dpi=300, pad_inches=0)
+
+    visible = vector_data['V_t0'][c]
+    fig = plt.figure(frameon=False)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.imshow(visible, cmap='Greys')
+    ax.axis('off')
+    plt.savefig("figures/visible_{}.png".format(c), dpi=300, pad_inches=0)
+
+plt.show()
+
