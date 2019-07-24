@@ -1,3 +1,5 @@
 *.pyc
 *.nc
 *.pkl
+*.png
+*.log

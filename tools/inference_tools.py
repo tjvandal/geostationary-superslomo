@@ -6,7 +6,9 @@ from .utils import blocks
 import torch
 import torch.nn as nn
 import torchvision
+
 from slomo import flownet as fl
+from slomo import unet
 
 import numpy as np
 
@@ -60,15 +62,16 @@ def split_array(arr, tile_size=128, overlap=16):
     return arrs['patches'], arrs['upper_left']
 
 ## Load and return flownet, interpnet, and warper
-def load_models(n_channels, model_path, multivariate=False):
+def load_models(n_channels, model_path, multivariate=False,
+                nn_model=unet.UNetSmall):
 
     model_filename = os.path.join(model_path, 'best.flownet.pth.tar')
     if multivariate:
-        flownet = fl.SloMoFlowNetMV(n_channels)#.cuda()
-        interpnet = fl.SloMoInterpNetMV(n_channels)#.cuda()
+        flownet = fl.SloMoFlowNetMV(n_channels, model=nn_model)#.cuda()
+        interpnet = fl.SloMoInterpNetMV(n_channels, model=nn_model)#.cuda()
     else:
-        flownet = fl.SloMoFlowNet(n_channels)#.cuda()
-        interpnet = fl.SloMoInterpNet(n_channels)#.cuda()
+        flownet = fl.SloMoFlowNet(n_channels, model=nn_model)#.cuda()
+        interpnet = fl.SloMoInterpNet(n_channels, model=nn_model)#.cuda()
 
     warper = fl.FlowWarper()
 
@@ -140,7 +143,8 @@ def single_inference(X0, X1, t, flownet, interpnet,
 
 ## Split interpolation for a single timepoint t
 def single_inference_split(X0, X1, t, flownet, interpnet,
-                           multivariate, block_size=128, overlap=16):
+                           multivariate, block_size=128, overlap=16,
+                           discard=0):
     X0_split, upper_left_idxs = split_array(X0, block_size, overlap)
     X1_split, _ = split_array(X1, block_size, overlap)
 
@@ -148,7 +152,7 @@ def single_inference_split(X0, X1, t, flownet, interpnet,
 
     # perform inference on patches
     height, width = X0.shape[1:3]
-    counter = np.zeros((1, height, width))
+    counter = np.zeros((1, height-discard*2, width-discard*2))
     res_sum = {}
     for i, (x0, x1) in enumerate(zip(X0_split, X1_split)):
         ix, iy = upper_left_idxs[i]
@@ -156,11 +160,13 @@ def single_inference_split(X0, X1, t, flownet, interpnet,
                                  multivariate)
         keys = res_i.keys()
         if i == 0:
-            res_sum = {k: np.zeros((res_i[k].shape[0], height, width)) for k in keys}
+            res_sum = {k: np.zeros((res_i[k].shape[0], height-discard*2, width-discard*2)) for k in keys}
 
         for var in keys:
-            res_sum[var][:,ix:ix+block_size,iy:iy+block_size] += res_i[var]
-            counter[:,ix:ix+block_size,iy:iy+block_size] += 1.
+            if discard > 0:
+                res_i[var] = res_i[var][:,discard:-discard,discard:-discard]
+            res_sum[var][:,ix:ix+block_size-discard*2,iy:iy+block_size-discard*2] += res_i[var]
+            counter[:,ix:ix+block_size-discard*2,iy:iy+block_size-discard*2] += 1.
 
     out = {}
     for var in res_sum.keys():

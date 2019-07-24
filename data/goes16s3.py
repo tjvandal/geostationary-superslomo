@@ -217,27 +217,32 @@ class NOAAGOESS3(object):
             data_file = self.download_from_s3(row.keyname, save_dir)
 
     def local_files(self, year=None, dayofyear=None):
-        data = []
-        base_dir = self.save_directory
-        if year is not None:
-            base_dir = os.path.join(base_dir, '%04i' % year)
-            if dayofyear is not None:
-                base_dir = os.path.join(base_dir, '%03i' % dayofyear)
+        filelist_file = 'localfilelist_{}_{}_{}.pkl'.format(self.product, year, dayofyear)
+        if os.path.exists(filelist_file):
+            data = pd.read_pickle(filelist_file)
+        else:
+            data = []
+            base_dir = self.save_directory
+            if year is not None:
+                base_dir = os.path.join(base_dir, '%04i' % year)
+                if dayofyear is not None:
+                    base_dir = os.path.join(base_dir, '%03i' % dayofyear)
 
-        #for f in os.listdir(self.save_directory):
-        if not os.path.exists(base_dir):
-            return pd.DataFrame()
-        for directory, folders, files in os.walk(base_dir):
-            for f in files:
-                if f[-3:] == '.nc':
-                    meta = get_filename_metadata(f)
-                    meta['file'] = os.path.join(directory, f)
-                    data.append(meta)
+            #for f in os.listdir(self.save_directory):
+            if not os.path.exists(base_dir):
+                return pd.DataFrame()
+            for directory, folders, files in os.walk(base_dir):
+                for f in files:
+                    if f[-3:] == '.nc':
+                        meta = get_filename_metadata(f)
+                        meta['file'] = os.path.join(directory, f)
+                        data.append(meta)
 
-        data = pd.DataFrame(data)
-        if len(data) > 0:
-            data = data.set_index(['year', 'dayofyear', 'hour', 'minute', 'second', 'spatial'])
-            data = data.pivot(columns='channel')
+            data = pd.DataFrame(data)
+            if len(data) > 0:
+                data = data.set_index(['year', 'dayofyear', 'hour', 'minute', 'second', 'spatial'])
+                data = data.pivot(columns='channel')
+            data.to_pickle(filelist_file)
         return data
 
     def iterate_day(self, year, day, hours=range(12,25), max_queue_size=5, min_queue_size=3,
@@ -301,12 +306,7 @@ class NOAAGOESS3(object):
                     pass
 
     def load_snapshots(self, year, dayofyear, hour, minute, minute_delta):
-        filelist_file = 'localfilelist_{}_{}_{}.pkl'.format(self.product, year, dayofyear)
-        if os.path.exists(filelist_file):
-            files = pd.read_pickle(filelist_file)
-        else:
-            files = self.local_files(year=year, dayofyear=dayofyear)
-            files.to_pickle(filelist_file)
+        files = self.local_files(year=year, dayofyear=dayofyear)
         channel_idxs = [c-1 for c in self.channels]
         I0files = files.loc[year, dayofyear, hour, minute].values[0,channel_idxs]
         I1files = files.loc[year, dayofyear, hour, minute+minute_delta].values[0,channel_idxs]
@@ -319,7 +319,7 @@ class NOAAGOESS3(object):
 ## SloMo Training Dataset on NOAA GOES S3 data
 class GOESDataset(Dataset):
     def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
-                 n_upsample=15, n_overlap=5, train=True):
+                 n_upsample=9, n_overlap=5, train=True):
         self.example_directory = example_directory
         if not os.path.exists(self.example_directory):
             os.makedirs(self.example_directory)
@@ -341,6 +341,7 @@ class GOESDataset(Dataset):
 
     def transform(self, block):
         n_select = self.n_upsample + 1
+
         # randomly shift temporally
         i = np.random.choice(range(0,self.n_overlap))
         block = block[i:n_select+i]
@@ -353,37 +354,39 @@ class GOESDataset(Dataset):
         i = np.random.choice(range(0,6))
         block = block[:,:,:,i:i+128]
 
-        # randomly flip up-down
-        #if np.random.uniform() > 0.5:
-            #block = block[:,::-1]
-            #block = np.flip(block, axis=1).copy()
+        # randomly rotate image
+        k = int((np.random.uniform()*4) % 4)
+        if k > 0:
+            block = np.rot90(block, axes=(2,3))
 
-        # randomly flip right-left 
-        #if np.random.uniform() > 0.5:
-        #    block = block[:,:,::-1]
-        #    block = np.flip(block, axis=2).copy()
+        # randomly flip 
+        if np.random.uniform() > 0.5:
+            block = np.flip(block, axis=2)#.copy()
 
-        return block
+        return block.copy()
 
     def __len__(self):
         return self.N_files
 
     def __getitem__(self, idx):
         f = self.example_files[idx]
-        try:
-            block = np.load(f)
-            if self.train:
-                block = self.transform(block)
-            return_index = np.random.choice(range(1, self.n_upsample))
-            I0 = torch.from_numpy(block[0])
-            I1 = torch.from_numpy(block[-1])
-            IT = torch.from_numpy(block[return_index])
-            sample = torch.stack([I0, IT, I1], dim=0)
-        except Exception as err:
-            os.remove(f)
-            del self.example_files[idx]
-            self.N_files -= 1
-            raise TypeError("Cannot load file: {}".format(f))
+
+        block = np.load(f)
+        if self.train:
+            block = self.transform(block)
+        return_index = np.random.choice(range(1, self.n_upsample))
+
+        I0 = torch.from_numpy(block[0])
+        I1 = torch.from_numpy(block[-1])
+        IT = torch.from_numpy(block[return_index])
+        sample = torch.stack([I0, IT, I1], dim=0)
+
+        #except ValueError as err:
+        #    print("Error", err)
+        #    os.remove(f)
+        #    del self.example_files[idx]
+        #    self.N_files -= 1
+        #    raise TypeError("Cannot load file: {}".format(f))
 
         return sample, (return_index / (1.*self.n_upsample))
 
@@ -412,5 +415,10 @@ def download_conus_data():
 
 if __name__ == "__main__":
     #noaagoes = NOAAGOESS3(channels=range(1,4))
-    download_data(test=True, n_jobs=6)
-    download_data(test=False, n_jobs=6)
+    #download_data(test=True, n_jobs=6)
+    #download_data(test=False, n_jobs=6)
+
+    example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-3Channels-Train-pt'
+    dataset = GOESDataset(example_directory, n_upsample=9, n_overlap=3)
+    for j in range(100):
+        dataset[j]

@@ -8,6 +8,7 @@ from torch.utils import data
 
 from data import goes16s3
 from tools import inference_tools
+from slomo import unet
 
 def _linear_interpolation(X0, X1, t):
     diff = X1 - X0
@@ -27,9 +28,8 @@ def time_rmse(x1, x2):
     diff = np.square(x1 - x2)
     return diff.mean(['x', 'y',])**0.5
 
-def inference_day(year, dayofyear, n_minutes=15, n_channels=3):
-    data_directory = '/nobackupp10/tvandal/data/goes16'
-    inference_dir = 'data/v1.1-inference/%iChannel-%iminute' % (n_channels, n_minutes)
+def inference_day(year, dayofyear, inference_dir, n_minutes=15, n_channels=3,
+                  nn_model=unet.UNetMedium, data_directory='/nobackupp10/tvandal/data/goes16'):
 
     # Initialize data reader
     channels = list(range(1,n_channels+1))
@@ -40,13 +40,15 @@ def inference_day(year, dayofyear, n_minutes=15, n_channels=3):
         os.makedirs(inference_dir)
 
     # Read checkpoints and models
-    checkpoint_sv = './saved-models/1.1/9Min-%iChannels-SV/' % n_channels
-    checkpoint_mv = './saved-models/1.1/9Min-%iChannels-MV/' % n_channels
+    checkpoint_sv = './saved-models/1.4-unet-medium/9Min-%iChannels-SV/' % n_channels
+    checkpoint_mv = './saved-models/1.4-unet-medium/9Min-%iChannels-MV/' % n_channels
 
     flownetsv, interpnetsv, warpersv = inference_tools.load_models(n_channels, checkpoint_sv,
-                                                             multivariate=False)
+                                                                   multivariate=False,
+                                                                   nn_model=nn_model)
     flownetmv, interpnetmv, warpermv = inference_tools.load_models(n_channels, checkpoint_mv,
-                                                             multivariate=True)
+                                                                   multivariate=True,
+                                                                   nn_model=nn_model)
     print("Day {}".format(dayofyear))
 
     # Get an iterator to loop over every n_minutes of the day

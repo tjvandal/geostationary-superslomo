@@ -1,26 +1,11 @@
 import numpy as np
 import os, sys
 import matplotlib
-#matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn
 import xarray as xr
 import pandas as pd
 import pickle
-
-'''
-params = {
-   'axes.labelsize': 14,
-   #'text.fontsize': 8,
-    'axes.titlesize': 16,
-   'legend.fontsize': 14,
-   'xtick.labelsize': 14,
-   'ytick.labelsize': 14,
-   'text.usetex': False,
-   'figure.figsize': [7, 4] # instead of 4.5, 4.5
-   }
-matplotlib.rcParams.update(params)
-'''
 
 seaborn.set_style("whitegrid")
 seaborn.set_context('paper', font_scale=1.7, rc={'lines.linewidth': 2.})
@@ -54,14 +39,18 @@ def read_rmses(inference_dir, max_files=None):
     linear_rmse = xr.concat(linear_rmse, 'example')
     return dict(sv=sv_rmse.compute(), mv=mv_rmse.compute(), linear=linear_rmse.compute())
 
+inference_directory_3 = '/nobackupp10/tvandal/GOES-SloMo/data/v1.4-inference/3Channel-15minute/'
+inference_directory_8 = '/nobackupp10/tvandal/GOES-SloMo/data/v1.4-inference/8Channel-15minute/'
+rmse_file = 'rmse-v1.4.pkl'
 
-# In[20]:
-rmse_file = 'rmse-v1.3.pkl'
+#inference_directory_3 = '/nobackupp10/tvandal/GOES-SloMo/data/v1.4-inference-irma/3Channel-15minute/'
+#inference_directory_8 = '/nobackupp10/tvandal/GOES-SloMo/data/v1.4-inference-irma/8Channel-15minute/'
+#rmse_file = 'rmse-irma-v1.4.pkl'
 
 if not os.path.exists(rmse_file):
     rmses = dict()
-    rmses['3Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.3-inference/3Channel-15minute/')
-    rmses['8Channels'] = read_rmses('/nobackupp10/tvandal/GOES-SloMo/data/v1.3-inference/8Channel-15minute/')
+    rmses['3Channels'] = read_rmses(inference_directory_3)
+    rmses['8Channels'] = read_rmses(inference_directory_8)
     pickle.dump(rmses, file(rmse_file, 'w'))
 else:
     rmses = pickle.load(file(rmse_file, 'r'))

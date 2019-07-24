@@ -11,4 +11,4 @@ module purge
 source ~/.bashrc
 conda activate slomo
 
-mpiexec -np 2 python mpi.train_net.py > mpi.train_net.log
+mpiexec -np 1 python mpi.train_net.py > mpi.train_net.log
