@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
 import numpy as np
 import torch
-
+import xarray as xr
+import metpy
 
 def plot_3channel_image(x, img_file=None, ax=None):
     if ax is None:
@@ -20,6 +22,31 @@ def plot_3channel_image(x, img_file=None, ax=None):
     ax.imshow(x_img)
     ax.axis('off')
     return ax
+
+def plot_3channel_image_projection(da, ax=None,
+                                  dummy_file='/nex/datapoolne/goes16/ABI-L1b-RadC/2018/001/20/OR_ABI-L1b-RadC-M3C01_G16_s20180012007199_e20180012009572_c20180012010018.nc'):
+    if ax is None:
+        ratio = 1.*da.shape[1] / da.shape[2]
+        hi = int(ratio * 10.)
+        wi = int(10.)
+        fig = plt.figure(figsize=(wi,hi), frameon=False)
+        ax = fig.add_axes([0, 0, 1, 1])
+
+    RGB = da.values[[1,2,0]]
+    RGB = np.transpose(RGB, (1,2,0))
+
+    ds_dummy = xr.open_dataset(dummy_file).metpy.parse_cf('Rad')
+    geos = ds_dummy.metpy.cartopy_crs
+
+    x = da.x
+    y = da.y
+
+
+    ax.imshow(RGB, origin='upper', extent=(x.min(), x.max(), y.min(), y.max()),
+              transform=geos)
+    ax.axis('off')
+    return ax
+
 
 def plot_1channel_image(x, img_file=None, cmap=None, vmin=None, vmax=None):
     x_img = x.detach().numpy()[0,0]

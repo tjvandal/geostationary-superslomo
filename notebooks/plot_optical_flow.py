@@ -12,6 +12,7 @@ import time
 import os
 
 import seaborn as sns
+import metpy
 
 sns.set_context("paper", font_scale=1.6)
 
@@ -54,6 +55,14 @@ print("I0: {}".format(I0.shape))
 if not os.path.exists('figures/network'):
     os.makedirs('figures/network')
 
+#plotting.plot_3channel_image(I1.values[:,discard:-discard, discard:-discard])
+#plt.savefig("figures/falsergb_image1-{}.png".format(product), dpi=300, pad_inches=0)
+
+plotting.plot_3channel_image_projection(I1)
+plt.show()
+sys.exit()
+
+
 flownet, interpnet, warper= inference_tools.load_models(n_channels, checkpoint,
                                                          multivariate=multivariate,
                                                          nn_model=nn_model)
@@ -63,9 +72,6 @@ vector_data = inference_tools.single_inference_split(I0.values, I1.values, t,
                                                      discard=discard)
 
 print("vector data keys: {}".format(vector_data.keys()))
-
-plotting.plot_3channel_image(I1.values[:,discard:-discard, discard:-discard])
-plt.savefig("figures/falsergb_image1-{}.png".format(product), dpi=300, pad_inches=0)
 
 plotting.plot_3channel_image((I1-I0).values[:,discard:-discard, discard:-discard]*2)
 plt.savefig("figures/diff_images-{}.png".format(product), dpi=300, pad_inches=0)
