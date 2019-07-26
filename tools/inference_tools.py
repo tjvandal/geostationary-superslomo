@@ -191,8 +191,8 @@ def _inference(X0, X1, flownet, interpnet, warper,
     X0_arr_torch[np.isnan(X0_arr_torch)] = 0.
     X1_arr_torch[np.isnan(X1_arr_torch)] = 0.
 
-    X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device)
-    X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device)
+    X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device, dtype=torch.float)
+    X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device, dtype=torch.float)
 
     f = flownet(X0_arr_torch, X1_arr_torch)
     n_channels = X0_arr_torch.shape[1]

@@ -37,10 +37,32 @@ def get_filename_metadata(f):
 
 def regrid_2km(da, band):
     if band in [1,3,5]: #(1 km)
-        da = utils.interp_da2d(da, 1./2, fillna=False)
+        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] / 2)
+        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] / 2)
+        return da.interp(x=new_x, y=new_y)
     elif band == 2: #(0.5 km)
-        da = utils.interp_da2d(da, 1./4, fillna=False)
-    return da
+        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] / 4)
+        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] / 4)
+        return da.interp(x=new_x, y=new_y)
+    else:
+        return da
+
+
+def regrid_2km_ds(ds):
+    band_id = ds.band_id.values[0]
+    print(ds.x[0], ds.y[0])
+    print(ds.dims['x'])
+    if band_id in [1,3,5]: #(1 km)
+        new_x = np.linspace(ds.x[0], ds.x[-1], ds.dims['x'] / 2)
+        new_y = np.linspace(ds.y[0], ds.y[-1], ds.dims['y'] / 2)
+        ds = ds.interp(x=new_x, y=new_y)
+    elif band_id == 2: #(0.5 km)
+        new_x = np.linspace(ds.x[0], ds.x[-1], ds.dims['x'] / 4)
+        new_y = np.linspace(ds.y[0], ds.y[-1], ds.dims['y'] / 4)
+        ds = ds.interp(x=new_x, y=new_y)
+    return ds
+
+
 
 def _open_and_merge_2km(files, normalize=True):
     '''
@@ -69,11 +91,13 @@ def _open_and_merge_2km(files, normalize=True):
         if normalize:
             mn = norm_factors[band_id][0]
             mx = norm_factors[band_id][1]
-            #mn = ds['min_radiance_value_of_valid_pixels'].values
-            #mx = ds['max_radiance_value_of_valid_pixels'].values
+
             ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
 
         #ds['Rad'] *= 1e-3
+        # TODO: Regrid datasets and concatenate to keep projection and attributes 
+        #newds = regrid_2km_ds(ds)
+
         # regrid to 2km to match all bands
         newrad = regrid_2km(ds['Rad'], band_id)
         newrad = newrad.expand_dims(dim="band")
@@ -389,6 +413,7 @@ class GOESDataset(Dataset):
         #    raise TypeError("Cannot load file: {}".format(f))
 
         return sample, (return_index / (1.*self.n_upsample))
+
 
 
 def download_data(test=False, n_jobs=1):
