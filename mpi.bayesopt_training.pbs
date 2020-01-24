@@ -1,6 +1,6 @@
 #PBS -S /bin/bash
 #PBS -l site=needed=/home1+/nex+/nobackupp10
-#PBS -l select=2:ncpus=1:model=sky_gpu,walltime=24:00:00
+#PBS -l select=4:ncpus=1:model=sky_gpu,walltime=24:00:00
 #PBS -j eo
 #PBS -m e
 #PBS -N slomo_bayesopt 
@@ -11,4 +11,4 @@ module purge
 source ~/.bashrc
 conda activate slomo_py3
 
-mpiexec -np 2 python mpi.bayesopt_training.py --experiment_name bayesopt-mpi-v2 > mpi.bayesopt_training.log
+mpiexec -np 4 python mpi.bayesopt_training.py --experiment_name bayesopt-mpi-v1.3 > mpi.bayesopt_training.log

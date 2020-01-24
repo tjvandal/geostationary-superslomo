@@ -40,8 +40,8 @@ def inference_day(year, dayofyear, inference_dir, n_minutes=15, n_channels=3,
         os.makedirs(inference_dir)
 
     # Read checkpoints and models
-    checkpoint_sv = './saved-models/1.4-unet-medium/9Min-%iChannels-SV/' % n_channels
-    checkpoint_mv = './saved-models/1.4-unet-medium/9Min-%iChannels-MV/' % n_channels
+    checkpoint_sv = './saved-models/1.4.1-unet-medium/9Min-%iChannels-SV/' % n_channels
+    checkpoint_mv = './saved-models/1.4.1-unet-medium/9Min-%iChannels-MV/' % n_channels
 
     flownetsv, interpnetsv, warpersv = inference_tools.load_models(n_channels, checkpoint_sv,
                                                                    multivariate=False,

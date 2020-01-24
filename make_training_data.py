@@ -8,7 +8,7 @@ directory = './data/training/'
 cpu_count = 20
 years = [2018, 2017]
 #channels = [list(range(1,4)), list(range(1,9)), list(range(1,17)),]
-channels = [list(range(1,9)), list(range(1,17)),]
+channels = [list(range(1,17)),]
 
 for c in channels:
     example_directory = os.path.join(directory, '9Min-%iChannels' % len(c))
@@ -16,7 +16,7 @@ for c in channels:
         os.makedirs(example_directory)
 
     goespytorch = goes16s3.NOAAGOESS3(save_directory='/nobackupp10/tvandal/data/goes16',
-                                     channels=c, product='ABI-L1b-RadM')
+                                      channels=c, product='ABI-L1b-RadM', skip_connection=True)
     jobs = []
     for year in years:
         for day in np.arange(1,365):

@@ -16,12 +16,13 @@ def hyperparameter_optimization(n_channels,
                                 experiment_name,
                                 batch_size,
                                 epochs,
-                                total_trials):
+                                total_trials,
+                                model_name):
 
     def train_evaluate(parameterization):
         w = parameterization['w']
         s = parameterization['s']
-        lr = parameterization['lr']
+        lr = 1e-4 #parameterization['lr']
         c = n_channels
 
         if multivariate:
@@ -42,7 +43,8 @@ def hyperparameter_optimization(n_channels,
                           epochs=epochs,
                           multivariate=multivariate,
                           lambda_w=w,
-                          lambda_s=s)
+                          lambda_s=s,
+                          model_name=model_name)
         if not np.isfinite(loss):
             loss = 1e6
 
@@ -50,7 +52,7 @@ def hyperparameter_optimization(n_channels,
 
     best_parameters, values, experiment, model = optimize(
             parameters=[
-                        {"name": "lr", "type": "range", "bounds": [1e-6, 1e-3], "log_scale": True},
+                        #{"name": "lr", "type": "range", "bounds": [1e-6, 1e-3], "log_scale": True},
                         {"name": "w", "type": "range", "bounds": [1e-2, 2.0]},
                         {"name": "s", "type": "range", "bounds": [1e-2, 2.0]},
                     ],
@@ -82,6 +84,7 @@ if __name__ == '__main__':
     parser.add_argument("--total_trials", default=2, type=int)
     parser.add_argument("--batch_size", default=128, type=int)
     parser.add_argument("--experiment_name", default='bayesopt-default', type=str)
+    parser.add_argument("--model_name", default='unet-medium', type=str)
     parser.set_defaults(multivariate=False)
     args = parser.parse_args()
 
@@ -93,4 +96,5 @@ if __name__ == '__main__':
                                 args.experiment_name,
                                 args.batch_size,
                                 args.epochs,
-                                args.total_trials)
+                                args.total_trials,
+                                args.model_name)

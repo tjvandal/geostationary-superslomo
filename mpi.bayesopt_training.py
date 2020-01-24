@@ -10,7 +10,7 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 name = MPI.Get_processor_name()
 
-N_GPUS = 4
+#N_GPUS = 4
 os.environ["CUDA_VISIBLE_DEVICES"] = str(rank % 4) #','.join([str(v) for v in range(0, N_GPUS)])
 
 parser = argparse.ArgumentParser()
@@ -18,6 +18,7 @@ parser.add_argument("--epochs", default=1, type=int)
 parser.add_argument("--total_trials", default=50, type=int)
 parser.add_argument("--batch_size", default=128, type=int)
 parser.add_argument("--experiment_name", default='bayesopt-mpi-default', type=str)
+parser.add_argument("--model_name", default='unet-medium', type=str)
 parser.set_defaults(multivariate=False)
 args = parser.parse_args()
 
@@ -35,4 +36,5 @@ for i, ex in enumerate(exps):
                                                       exp_name,
                                                       args.batch_size,
                                                       epochs=args.epochs,
-                                                      total_trials=args.total_trials)
+                                                      total_trials=args.total_trials,
+                                                      model_name=args.model_name)

@@ -9,7 +9,7 @@ import time
 import shutil
 
 import boto
-import botocore
+import botocore.config
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -37,12 +37,12 @@ def get_filename_metadata(f):
 
 def regrid_2km(da, band):
     if band in [1,3,5]: #(1 km)
-        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] / 2)
-        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] / 2)
+        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] // 2)
+        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] // 2)
         return da.interp(x=new_x, y=new_y)
     elif band == 2: #(0.5 km)
-        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] / 4)
-        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] / 4)
+        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] // 4)
+        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] // 4)
         return da.interp(x=new_x, y=new_y)
     else:
         return da
@@ -81,6 +81,7 @@ def _open_and_merge_2km(files, normalize=True):
                     16: (0, 168)}
     das = []
     for f in files:
+        ds = xr.open_dataset(f)
         try:
             ds = xr.open_dataset(f)
             band_id = ds.band_id.values[0]
@@ -134,14 +135,15 @@ class NOAAGOESS3(object):
         self.channels = channels
         self.save_directory = os.path.join(save_directory, product)
         if not skip_connection:
-            try:
-                self._connect_to_s3()
-            except:
-                pass
+            #try:
+            self._connect_to_s3()
+            #except Exception as error:
+            #    print("Failed to connect to s3 {}".format(error))
+            #    pass
 
     def _connect_to_s3(self):
-        config = botocore.client.Config(connect_timeout=5, retries={'max_attempts': 0})
-        self.conn = boto.connect_s3(host='s3.amazonaws.com', config=config)
+        config = botocore.config.Config(connect_timeout=5, retries={'max_attempts': 1})
+        self.conn = boto.connect_s3() #host='s3.amazonaws.com', config=config)
         self.goes_bucket = self.conn.get_bucket(self.bucket_name)
 
     def year_day_pairs(self):
@@ -257,7 +259,7 @@ class NOAAGOESS3(object):
                 return pd.DataFrame()
             for directory, folders, files in os.walk(base_dir):
                 for f in files:
-                    if f[-3:] == '.nc':
+                    if (f[-3:] == '.nc') and ("L1b" in f):
                         meta = get_filename_metadata(f)
                         meta['file'] = os.path.join(directory, f)
                         data.append(meta)
@@ -286,6 +288,7 @@ class NOAAGOESS3(object):
                     continue
 
                 files = row['file'][self.channels]
+                da = _open_and_merge_2km(files.values, normalize=normalize)
                 try:
                     da = _open_and_merge_2km(files.values, normalize=normalize)
                     running_samples.append(da)
@@ -395,7 +398,14 @@ class GOESDataset(Dataset):
     def __getitem__(self, idx):
         f = self.example_files[idx]
 
-        block = np.load(f)
+        try:
+            block = np.load(f)
+        except ValueError:
+            os.remove(f)
+            del self.example_files[idx]
+            self.N_files -= 1
+            return self.__getitem__(idx-1)
+
         if self.train:
             block = self.transform(block)
         return_index = np.random.choice(range(1, self.n_upsample))
@@ -439,11 +449,24 @@ def download_conus_data():
                 noaa.download_day(year, day)
 
 if __name__ == "__main__":
+    #noaa = NOAAGOESS3(channels=range(1,16))
+   # noaa.download_day(2018, 282) # hurricane michael
+    from datetime import datetime
+    year = 2018
+    date = datetime(year,3,2)
+    print('Date: {}, {}'.format(date,  date.timetuple().tm_yday))
+    dataset = NOAAGOESS3(product='ABI-L1b-RadM',
+                                  skip_connection=True,
+                                  channels=list(range(1,4)))
+
+    hour_das = dataset.iterate_day(year, date.timetuple().tm_yday, 
+                                hours=[20]) # N,12or13,512,512,3
+    next(hour_das)
     #noaagoes = NOAAGOESS3(channels=range(1,4))
     #download_data(test=True, n_jobs=6)
     #download_data(test=False, n_jobs=6)
 
-    example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-3Channels-Train-pt'
-    dataset = GOESDataset(example_directory, n_upsample=9, n_overlap=3)
-    for j in range(100):
-        dataset[j]
+    #example_directory = '/nobackupp10/tvandal/GOES-SloMo/data/training/9Min-3Channels-Train-pt'
+    #dataset = GOESDataset(example_directory, n_upsample=9, n_overlap=3)
+    #for j in range(100):
+    #    dataset[j]

@@ -13,6 +13,7 @@ def plot_3channel_image(x, img_file=None, ax=None):
 
         fig = plt.figure(figsize=(wi,hi), frameon=False)
         ax = fig.add_axes([0, 0, 1, 1])
+        
     x_img = x[[1,2,0]]
     x_img = np.transpose(x_img, (1,2,0))
 
@@ -23,52 +24,52 @@ def plot_3channel_image(x, img_file=None, ax=None):
     ax.axis('off')
     return ax
 
-def plot_3channel_image_projection(da, ax=None,
-                                  dummy_file='/nex/datapoolne/goes16/ABI-L1b-RadC/2018/001/20/OR_ABI-L1b-RadC-M3C01_G16_s20180012007199_e20180012009572_c20180012010018.nc'):
+def plot_1channel_image(x, img_file=None, ax=None, vmax=None):
+    if ax is None:
+        ratio = 1.*x.shape[0] / x.shape[1]
+        hi = int(ratio * 10.)
+        wi = int(10.)
+
+        fig = plt.figure(figsize=(wi,hi), frameon=False)
+        ax = fig.add_axes([0, 0, 1, 1])
+
+    ax.imshow(x, vmax=vmax, cmap='jet')
+    ax.axis('off')
+    return ax
+
+def get_conus_projection():
+    dummy_file='/nex/datapoolne/goes16/ABI-L1b-RadC/2018/001/20/OR_ABI-L1b-RadC-M3C07_G16_s20180012002199_e20180012004583_c20180012005020.nc'
+    ds_dummy = xr.open_dataset(dummy_file)
+    return ds_dummy.metpy.parse_cf('Rad')
+
+def plot_3channel_image_projection(da, ax=None):
     if ax is None:
         ratio = 1.*da.shape[1] / da.shape[2]
         hi = int(ratio * 10.)
         wi = int(10.)
         fig = plt.figure(figsize=(wi,hi), frameon=False)
-        ax = fig.add_axes([0, 0, 1, 1])
 
-    RGB = da.values[[1,2,0]]
-    RGB = np.transpose(RGB, (1,2,0))
 
-    ds_dummy = xr.open_dataset(dummy_file).metpy.parse_cf('Rad')
+    ds_dummy = get_conus_projection()
+
+    R = da.sel(band=2).data
+    G = da.sel(band=3).data
+    B = da.sel(band=1).data
+
+
+    RGB = np.stack([R, G, B], axis=2)
     geos = ds_dummy.metpy.cartopy_crs
+    ax = fig.add_subplot(1, 1, 1, projection=geos)
 
-    x = da.x
-    y = da.y
-
+    x = ds_dummy.x
+    y = ds_dummy.y
 
     ax.imshow(RGB, origin='upper', extent=(x.min(), x.max(), y.min(), y.max()),
               transform=geos)
+    ax.coastlines(resolution='50m', color='black', linewidth=0.5)
+    ax.add_feature(ccrs.cartopy.feature.STATES, linewidth=0.5)
     ax.axis('off')
     return ax
-
-
-def plot_1channel_image(x, img_file=None, cmap=None, vmin=None, vmax=None):
-    x_img = x.detach().numpy()[0,0]
-    if img_file is not None:
-        plt.imsave(img_file, x_img, cmap=cmap, vmin=vmin, vmax=vmax)
-        
-    plt.imshow(x_img, cmap=cmap, vmin=vmin, vmax=vmax)
-    plt.axis('off')
-    plt.show()
-
-def plot_2channel_image(x, img_file=None):
-    img1 = x.detach().numpy()[0,0]
-    img2 = x.detach().numpy()[0,1]
-    
-    img = np.concatenate([img1, img2], axis=1)
-    if img_file is not None:
-        plt.imsave(img_file, img)
-        
-        
-    plt.imshow(img)
-    plt.axis('off')
-    plt.show()
 
 def opticalflow(flow):
     hsv = np.ones((flow.shape[0], flow.shape[1], 3))*255.
@@ -97,13 +98,14 @@ def plot_optical_flow(x, img_file=None):
     plt.imshow(bgr)
     plt.axis('off')
 
-def flow_quiver_plot(u, v, ax=None, down=50):
+def flow_quiver_plot(u, v, ax=None, down=50,vmax=None, background_img=None):
     intensity = (u**2 + v**2) ** 0.5
 
     u_l =  downsample(u, down)
     v_l =  downsample(v, down)
 
     intensity_l = ( u_l ** 2 + v_l**2 ) ** 0.5
+    print("maximum intensity: {}".format(intensity.max()))
     u_l = u_l #/ intensity_l
     v_l = v_l #/ intensity_l
 
@@ -118,8 +120,13 @@ def flow_quiver_plot(u, v, ax=None, down=50):
         ax = fig.add_axes([0, 0, 1, 1])
         ax.axis('off')
 
-    ax.imshow(intensity)
-    ax.quiver(X, Y, u_l, v_l, pivot='middle', width=0.001, headwidth=2, headlength=4)
+    if background_img is not None:
+        ax.imshow(background_img)
+    else:
+        ax.imshow(intensity, vmax=vmax)
+
+    ax.quiver(X, Y, u_l, v_l, pivot='middle', width=0.002, headwidth=2, headlength=4,
+              color='black', minlength=0.5)
     ax.xaxis.set_ticks([])
     ax.yaxis.set_ticks([])
     ax.set_aspect('equal')

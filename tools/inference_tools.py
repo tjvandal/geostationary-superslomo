@@ -84,6 +84,10 @@ def load_models(n_channels, model_path, multivariate=False,
     warper = warper.to(device)
 
     def load_checkpoint(flownet, interpnet):
+        checkpoint = torch.load(model_filename)
+        flownet.load_state_dict(checkpoint['flownet_state_dict'])
+        interpnet.load_state_dict(checkpoint['interpnet_state_dict'])
+            
         epoch = 0
         if os.path.isfile(model_filename):
             print("loading checkpoint %s" % model_filename)
@@ -113,8 +117,8 @@ def single_inference(X0, X1, t, flownet, interpnet,
     X0_arr_torch[np.isnan(X0_arr_torch)] = 0.
     X1_arr_torch[np.isnan(X1_arr_torch)] = 0.
 
-    X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device)
-    X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device)
+    X0_arr_torch = torch.unsqueeze(X0_arr_torch, 0).to(device, dtype=torch.float)
+    X1_arr_torch = torch.unsqueeze(X1_arr_torch, 0).to(device, dtype=torch.float)
 
     f = flownet(X0_arr_torch, X1_arr_torch)
     n_channels = X0_arr_torch.shape[1]
@@ -152,6 +156,7 @@ def single_inference_split(X0, X1, t, flownet, interpnet,
 
     # perform inference on patches
     height, width = X0.shape[1:3]
+    #counter = np.zeros((1, height, width))
     counter = np.zeros((1, height-discard*2, width-discard*2))
     res_sum = {}
     for i, (x0, x1) in enumerate(zip(X0_split, X1_split)):

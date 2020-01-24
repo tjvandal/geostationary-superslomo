@@ -1,7 +1,7 @@
 import xarray as xr
 import numpy as np
 import cv2
-from scipy.misc import imresize
+
 import scipy.interpolate
 
 def fillmiss(x):
@@ -19,11 +19,6 @@ def interp_dim(x, scale):
     x0, xlast = x[0], x[-1]
     newlength = int(len(x) * scale)
     y = np.linspace(x0, xlast, num=newlength, endpoint=False)
-    return y
-    step = (x[1]-x[0])/scale
-    y = np.arange(x0, xlast+step*scale, step)
-    print("compute length", len(x)*scale)
-    #[x0 + s*scale for x in range()]
     return y
 
 def interp_tensor(X, scale, fill=True, how=cv2.INTER_NEAREST):
@@ -77,10 +72,11 @@ def interp_da2d(da, scale, fillna=False, how=cv2.INTER_NEAREST):
                               interpolation=how)
 
     # interpolate lat and lons
-    latnew = interp_dim(da[da.dims[0]].values, scale)
-    lonnew = interp_dim(da[da.dims[1]].values, scale)
+    latnew = interp_dim(da[da.dims[1]].values, scale)
+    lonnew = interp_dim(da[da.dims[0]].values, scale)
+
     # intialize a new dataarray
-    return xr.DataArray(scaled_tensor, coords=[latnew, lonnew],
+    return xr.DataArray(scaled_tensor, coords=[lonnew, latnew],
                  dims=da.dims)
 
 def blocks(data, width=352):
