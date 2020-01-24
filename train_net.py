@@ -130,7 +130,7 @@ def train_net(n_channels=3,
                     return None
 
                 #I0, I1, IT = I0.to(device), I1.to(device), IT.to(device, non_blocking=True)
-                sample = sample.to(device)
+                sample = sample.to(device, dtype=torch.float)
                 I0 = sample[:,0]
                 IT = sample[:,1]
                 I1 = sample[:,2]
