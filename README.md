@@ -1,4 +1,4 @@
-# GOES-SlowMo
+# Geostationary Temporal Interpolation with Optical Flow
 
 Depends on NOAA AWS S3 ABI data.  Trains and tests on mesoscale, inference on CONUS and full disk.
 
