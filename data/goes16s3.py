@@ -8,8 +8,8 @@ import io
 import time
 import shutil
 
-import boto
-import botocore.config
+#import boto
+#import botocore.config
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -23,106 +23,6 @@ from torch.utils.data import Dataset, DataLoader
 import tools
 
 
-def get_filename_metadata(f):
-    channel = int(f.split('_')[1][-2:])
-    spatial = f.split('-')[2]
-    t1 = f.split('_')[3]
-    year = int(t1[1:5])
-    dayofyear = int(t1[5:8])
-    hour = int(t1[8:10])
-    minute = int(t1[10:12])
-    second = int(t1[12:15])
-    return dict(channel=channel, year=year, dayofyear=dayofyear, hour=hour,
-                minute=minute, second=second, spatial=spatial)
-
-def regrid_2km(da, band):
-    if band in [1,3,5]: #(1 km)
-        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] // 2)
-        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] // 2)
-        return da.interp(x=new_x, y=new_y)
-    elif band == 2: #(0.5 km)
-        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] // 4)
-        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] // 4)
-        return da.interp(x=new_x, y=new_y)
-    else:
-        return da
-
-
-def regrid_2km_ds(ds):
-    band_id = ds.band_id.values[0]
-    print(ds.x[0], ds.y[0])
-    print(ds.dims['x'])
-    if band_id in [1,3,5]: #(1 km)
-        new_x = np.linspace(ds.x[0], ds.x[-1], ds.dims['x'] / 2)
-        new_y = np.linspace(ds.y[0], ds.y[-1], ds.dims['y'] / 2)
-        ds = ds.interp(x=new_x, y=new_y)
-    elif band_id == 2: #(0.5 km)
-        new_x = np.linspace(ds.x[0], ds.x[-1], ds.dims['x'] / 4)
-        new_y = np.linspace(ds.y[0], ds.y[-1], ds.dims['y'] / 4)
-        ds = ds.interp(x=new_x, y=new_y)
-    return ds
-
-
-
-def _open_and_merge_2km(files, normalize=True):
-    '''
-    This method opens a list of S3 NOAA ABI files,
-        normalizes by max and min radiances,
-        and interpolations to 2km.
-    Return:
-        xarray.DataArray (band: len(files), x, y)
-
-    https://www.star.nesdis.noaa.gov/goesr/docs/ATBD/Imagery.pdf
-    '''
-    norm_factors = {1: (-26, 805), 2: (-20, 628), 3: (-12, 373),
-                    4: (-4, 140), 5: (-3, 94), 6: (-1, 30), 7: (0, 25),
-                    8: (0, 28), 9: (0, 28), 10: (0, 44), 11: (0, 79),
-                    12: (0, 134), 13: (0, 183), 14: (0, 198), 15: (0, 211),
-                    16: (0, 168)}
-    das = []
-    for f in files:
-        ds = xr.open_dataset(f)
-        try:
-            ds = xr.open_dataset(f)
-            band_id = ds.band_id.values[0]
-        except Exception:
-            raise ValueError("Cannot read file: {}".format(f))
-
-        # normalize radiance
-        if normalize:
-            mn = norm_factors[band_id][0]
-            mx = norm_factors[band_id][1]
-
-            ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
-
-        #ds['Rad'] *= 1e-3
-        # TODO: Regrid datasets and concatenate to keep projection and attributes 
-        #newds = regrid_2km_ds(ds)
-
-        # regrid to 2km to match all bands
-        newrad = regrid_2km(ds['Rad'], band_id)
-        newrad = newrad.expand_dims(dim="band")
-        newrad = newrad.assign_coords(band=ds.band_id.values)
-
-        # for some reason, these coordinates are included in band 4
-        if 't' in newrad.coords:
-            newrad = newrad.drop('t')
-        if 'y_image' in newrad.coords:
-            newrad = newrad.drop('y_image')
-        if 'x_image' in newrad.coords:
-            newrad = newrad.drop('x_image')
-
-        das.append(newrad)
-
-        # reindex so the concatenation works correctly
-        #das[-1] = das[-1].reindex({'x': das[0].x.values, 
-        #                           'y': das[0].y.values})
-        das[-1] = das[-1].assign_coords(x=das[0].x.values,
-                                        y=das[0].y.values)
-    # concatenate each file by band after interpolating to the same grid
-    das = xr.concat(das, 'band')
-    return das
-
 
 ## Interact with NOAA GOES ABI dataset via S3 and local paths
 class NOAAGOESS3(object):
@@ -134,17 +34,13 @@ class NOAAGOESS3(object):
         self.product = product
         self.channels = channels
         self.save_directory = os.path.join(save_directory, product)
-        if not skip_connection:
-            #try:
-            self._connect_to_s3()
-            #except Exception as error:
-            #    print("Failed to connect to s3 {}".format(error))
-            #    pass
+#        if not skip_connection:
+#            self._connect_to_s3()
 
-    def _connect_to_s3(self):
-        config = botocore.config.Config(connect_timeout=5, retries={'max_attempts': 1})
-        self.conn = boto.connect_s3() #host='s3.amazonaws.com', config=config)
-        self.goes_bucket = self.conn.get_bucket(self.bucket_name)
+#    def _connect_to_s3(self):
+#        config = botocore.config.Config(connect_timeout=5, retries={'max_attempts': 1})
+#        self.conn = boto.connect_s3() #host='s3.amazonaws.com', config=config)
+#        self.goes_bucket = self.conn.get_bucket(self.bucket_name)
 
     def year_day_pairs(self):
         '''
@@ -243,7 +139,11 @@ class NOAAGOESS3(object):
             data_file = self.download_from_s3(row.keyname, save_dir)
 
     def local_files(self, year=None, dayofyear=None):
-        filelist_file = 'localfilelist_{}_{}_{}.pkl'.format(self.product, year, dayofyear)
+        tmp_path = os.path.join(os.path.dirname(__file__), '.cache')
+        filelist_file = tmp_path + '/localfilelist_{}_{}_{}.pkl'.format(self.product, year, dayofyear)
+        if not os.path.exists(tmp_path):
+            os.makedirs(tmp_path)
+
         if os.path.exists(filelist_file):
             data = pd.read_pickle(filelist_file)
         else:
@@ -298,9 +198,15 @@ class NOAAGOESS3(object):
                     continue
 
 
-                if len(running_samples) > 1:
-                    running_samples[-1]['x'].values = running_samples[0]['x'].values
-                    running_samples[-1]['y'].values = running_samples[0]['y'].values
+                #if len(running_samples) > 1:
+                #    running_samples[-1]['x'].values = running_samples[0]['x'].values
+                #    running_samples[-1]['y'].values = running_samples[0]['y'].values
+
+                is_x = np.all(running_samples[-1]['x'].values == running_samples[0]['x'].values)
+                is_y = np.all(running_samples[-1]['y'].values == running_samples[0]['y'].values)
+                if (not is_x) or (not is_y):
+                    running_samples = []
+                    continue
 
                 if len(running_samples) == max_queue_size:
                     try:
@@ -317,8 +223,8 @@ class NOAAGOESS3(object):
         #if (self._check_directory(year, day)) and (not force):  return
         # save blocks such that 15 minutes (16 timestamps) + 4 for randomness n=20
         #           overlap by 5 minutes
-        data_iterator = self.iterate_day(year, day, max_queue_size=12,
-                                         min_queue_size=1)
+        data_iterator = self.iterate_day(year, day, max_queue_size=20,
+                                         min_queue_size=5)
 
         for data in data_iterator:
             blocked_data = utils.blocks(data, width=patch_width)
@@ -342,11 +248,9 @@ class NOAAGOESS3(object):
         I1 = _open_and_merge_2km(I1files)
         return I0, I1
 
-
-## SloMo Training Dataset on NOAA GOES S3 data
+## Interpolation Training Dataset on NOAA GOES S3 data
 class GOESDataset(Dataset):
-    def __init__(self, example_directory='/raid/tj/GOES/SloMo-5min/',
-                 n_upsample=9, n_overlap=5, train=True):
+    def __init__(self, example_directory, n_upsample=9, n_overlap=5, train=True):
         self.example_directory = example_directory
         if not os.path.exists(self.example_directory):
             os.makedirs(self.example_directory)
@@ -425,6 +329,101 @@ class GOESDataset(Dataset):
         return sample, (return_index / (1.*self.n_upsample))
 
 
+## Worker functions
+def _open_and_merge_2km(files, normalize=True):
+    '''
+    This method opens a list of S3 NOAA ABI files,
+        normalizes by max and min radiances,
+        and interpolations to 2km.
+    Return:
+        xarray.DataArray (band: len(files), x, y)
+
+    https://www.star.nesdis.noaa.gov/goesr/docs/ATBD/Imagery.pdf
+    '''
+    norm_factors = {1: (-26, 805), 2: (-20, 628), 3: (-12, 373),
+                    4: (-4, 140), 5: (-3, 94), 6: (-1, 30), 7: (0, 25),
+                    8: (0, 28), 9: (0, 28), 10: (0, 44), 11: (0, 79),
+                    12: (0, 134), 13: (0, 183), 14: (0, 198), 15: (0, 211),
+                    16: (0, 168)}
+    das = []
+    for f in files:
+        ds = xr.open_dataset(f)
+        try:
+            ds = xr.open_dataset(f)
+            band_id = ds.band_id.values[0]
+        except Exception:
+            raise ValueError("Cannot read file: {}".format(f))
+
+        # normalize radiance
+        if normalize:
+            mn = norm_factors[band_id][0]
+            mx = norm_factors[band_id][1]
+
+            ds['Rad'] = (ds['Rad'] - mn) / (mx - mn)
+
+        #ds['Rad'] *= 1e-3
+        # TODO: Regrid datasets and concatenate to keep projection and attributes 
+        #newds = regrid_2km_ds(ds)
+
+        # regrid to 2km to match all bands
+        newrad = regrid_2km(ds['Rad'], band_id)
+        newrad = newrad.expand_dims(dim="band")
+        newrad = newrad.assign_coords(band=ds.band_id.values)
+
+        # for some reason, these coordinates are included in band 4
+        if 't' in newrad.coords:
+            newrad = newrad.drop('t')
+        if 'y_image' in newrad.coords:
+            newrad = newrad.drop('y_image')
+        if 'x_image' in newrad.coords:
+            newrad = newrad.drop('x_image')
+
+        das.append(newrad)
+
+        # reindex so the concatenation works correctly
+        #das[-1] = das[-1].reindex({'x': das[0].x.values, 
+        #                           'y': das[0].y.values})
+        das[-1] = das[-1].assign_coords(x=das[0].x.values,
+                                        y=das[0].y.values)
+    # concatenate each file by band after interpolating to the same grid
+    das = xr.concat(das, 'band')
+    return das
+
+def get_filename_metadata(f):
+    channel = int(f.split('_')[1][-2:])
+    spatial = f.split('-')[2]
+    t1 = f.split('_')[3]
+    year = int(t1[1:5])
+    dayofyear = int(t1[5:8])
+    hour = int(t1[8:10])
+    minute = int(t1[10:12])
+    second = int(t1[12:15])
+    return dict(channel=channel, year=year, dayofyear=dayofyear, hour=hour,
+                minute=minute, second=second, spatial=spatial)
+
+def regrid_2km(da, band):
+    if band in [1,3,5]: #(1 km)
+        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] // 2)
+        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] // 2)
+        return da.interp(x=new_x, y=new_y)
+    elif band == 2: #(0.5 km)
+        new_x = np.linspace(da.x[0], da.x[-1], da.x.shape[0] // 4)
+        new_y = np.linspace(da.y[0], da.y[-1], da.y.shape[0] // 4)
+        return da.interp(x=new_x, y=new_y)
+    else:
+        return da
+
+def regrid_2km_ds(ds):
+    band_id = ds.band_id.values[0]
+    if band_id in [1,3,5]: #(1 km)
+        new_x = np.linspace(ds.x[0], ds.x[-1], ds.dims['x'] / 2)
+        new_y = np.linspace(ds.y[0], ds.y[-1], ds.dims['y'] / 2)
+        ds = ds.interp(x=new_x, y=new_y)
+    elif band_id == 2: #(0.5 km)
+        new_x = np.linspace(ds.x[0], ds.x[-1], ds.dims['x'] / 4)
+        new_y = np.linspace(ds.y[0], ds.y[-1], ds.dims['y'] / 4)
+        ds = ds.interp(x=new_x, y=new_y)
+    return ds
 
 def download_data(test=False, n_jobs=1):
     if test:
@@ -451,6 +450,7 @@ def download_conus_data():
 if __name__ == "__main__":
     #noaa = NOAAGOESS3(channels=range(1,16))
    # noaa.download_day(2018, 282) # hurricane michael
+
     from datetime import datetime
     year = 2018
     date = datetime(year,3,2)
