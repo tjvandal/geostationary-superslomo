@@ -1,0 +1,33 @@
+name: nexml_slomo
+channels:
+    - defaults
+    - conda-forge
+    - pytorch
+dependencies:
+    - python=3.7
+    - pytorch=1.8
+    - matplotlib=3.2
+    - basemap
+    - torchvision
+    - xarray
+    - numpy
+    - scipy
+    - pip
+    - zarr
+    - pandas
+    - opencv
+    - jupyterlab
+    - seaborn
+    - tensorboard
+    - pyhdf
+    - joblib
+    - netcdf4
+    - tensorboard
+    - cudatoolkit
+    - awscli
+    - botocore
+    - boto
+    - dask
+    - pip:
+        - petastorm
+        - ax-platform
